@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "faster-browser-agent",
+  "displayName": "Faster Browser Agent",
+  "version": "0.1.0",
+  "description": "A code-aware, token-efficient browser driver: deep-links from your source's route table instead of clicking through menus, compresses page perception, replays known flows with zero model calls, and gives every git worktree its own browser state.",
+  "author": {
+    "name": "Mika Stiebitz",
+    "url": "https://github.com/MikaStiebitz"
+  },
+  "repository": "https://github.com/MikaStiebitz/faster-browser-agent",
+  "license": "MIT",
+  "keywords": [
+    "browser",
+    "automation",
+    "playwright",
+    "web",
+    "navigation",
+    "testing",
+    "mcp"
+  ],
+  "mcpServers": "./.mcp.json"
+}

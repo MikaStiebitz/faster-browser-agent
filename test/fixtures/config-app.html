@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Acme Admin — Settings</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font: 14px system-ui, sans-serif; margin: 0; color: #111; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #ddd; }
+  .layout { display: flex; min-height: 100vh; }
+  nav.rail { width: 200px; border-right: 1px solid #ddd; padding: 8px; }
+  nav.rail a { display: block; padding: 6px 8px; text-decoration: none; color: #222; border-radius: 4px; }
+  nav.rail a[aria-current="page"] { background: #eef; font-weight: 600; }
+  main { flex: 1; padding: 16px; }
+  [role="tablist"] { display: flex; gap: 4px; border-bottom: 1px solid #ddd; margin-bottom: 12px; }
+  [role="tab"] { padding: 6px 12px; cursor: pointer; border: 1px solid transparent; background: none; }
+  [role="tab"][aria-selected="true"] { border-color: #ddd; border-bottom-color: #fff; font-weight: 600; }
+  [role="tabpanel"][hidden] { display: none; }
+  fieldset { border: 1px solid #e3e3e3; border-radius: 6px; margin: 0 0 12px; padding: 10px 12px; }
+  legend { font-weight: 600; padding: 0 4px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .row label { width: 220px; }
+  input[type=text], input[type=number], input[type=password], input[type=email], select { padding: 4px 6px; min-width: 220px; }
+  details { border: 1px solid #e3e3e3; border-radius: 6px; padding: 8px 10px; margin-bottom: 10px; }
+  summary { cursor: pointer; font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border-bottom: 1px solid #eee; padding: 4px 6px; text-align: left; }
+  dialog { border: 1px solid #bbb; border-radius: 8px; padding: 16px; min-width: 360px; }
+  .err { color: #b00; }
+  .toolbar { display: flex; gap: 8px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Acme Admin</strong>
+  <input type="search" aria-label="Search settings" placeholder="Search settings…">
+  <button id="open-help" type="button">Help</button>
+</header>
+
+<div class="layout">
+  <nav class="rail" aria-label="Sections">
+    <a href="#general" aria-current="page">General</a>
+    <a href="#network">Network</a>
+    <a href="#security">Security</a>
+    <a href="#integrations">Integrations</a>
+    <a href="#advanced">Advanced</a>
+  </nav>
+
+  <main>
+    <h1>Settings</h1>
+
+    <!-- outer tabs -->
+    <div role="tablist" aria-label="Settings sections">
+      <button role="tab" id="tab-general" aria-selected="true" aria-controls="panel-general">General</button>
+      <button role="tab" id="tab-network" aria-selected="false" aria-controls="panel-network">Network</button>
+      <button role="tab" id="tab-advanced" aria-selected="false" aria-controls="panel-advanced">Advanced</button>
+    </div>
+
+    <section role="tabpanel" id="panel-general" aria-labelledby="tab-general">
+      <fieldset>
+        <legend>Identity</legend>
+        <div class="row"><label for="org-name">Organisation name</label>
+          <input type="text" id="org-name" data-testid="org-name" value="Acme Inc"></div>
+        <div class="row"><label for="org-slug">Slug</label>
+          <input type="text" id="org-slug" value="acme"></div>
+        <div class="row"><label for="locale">Default locale</label>
+          <select id="locale" data-testid="locale">
+            <option value="en" selected>English</option>
+            <option value="de">Deutsch</option>
+            <option value="fr">Français</option>
+          </select></div>
+      </fieldset>
+      <fieldset>
+        <legend>Notifications</legend>
+        <div class="row"><label for="notify-email">Email notifications</label>
+          <input type="checkbox" id="notify-email" checked></div>
+        <div class="row"><label for="notify-digest">Weekly digest</label>
+          <input type="checkbox" id="notify-digest"></div>
+      </fieldset>
+    </section>
+
+    <section role="tabpanel" id="panel-network" aria-labelledby="tab-network" hidden>
+      <!-- nested sub-tabs: the structure agents usually get lost in -->
+      <div role="tablist" aria-label="Network areas">
+        <button role="tab" id="tab-net-proxy" aria-selected="true" aria-controls="panel-net-proxy">Proxy</button>
+        <button role="tab" id="tab-net-smtp" aria-selected="false" aria-controls="panel-net-smtp">SMTP</button>
+        <button role="tab" id="tab-net-limits" aria-selected="false" aria-controls="panel-net-limits">Limits</button>
+      </div>
+
+      <div role="tabpanel" id="panel-net-proxy" aria-labelledby="tab-net-proxy">
+        <div class="row"><label for="proxy-url">Proxy URL</label>
+          <input type="text" id="proxy-url" data-testid="proxy-url" placeholder="http://proxy:3128"></div>
+        <div class="row"><label for="proxy-tls">Use TLS</label>
+          <input type="checkbox" id="proxy-tls"></div>
+      </div>
+
+      <div role="tabpanel" id="panel-net-smtp" aria-labelledby="tab-net-smtp" hidden>
+        <div class="row"><label for="smtp-host">SMTP host</label>
+          <input type="text" id="smtp-host" data-testid="smtp-host" value=""></div>
+        <div class="row"><label for="smtp-port">SMTP port</label>
+          <input type="number" id="smtp-port" data-testid="smtp-port" value="25"></div>
+        <div class="row"><label for="smtp-user">SMTP username</label>
+          <input type="text" id="smtp-user"></div>
+        <div class="row"><label for="smtp-pass">SMTP password</label>
+          <input type="password" id="smtp-pass"></div>
+        <div class="row"><label for="smtp-encryption">Encryption</label>
+          <select id="smtp-encryption">
+            <option value="none">None</option>
+            <option value="starttls" selected>STARTTLS</option>
+            <option value="tls">TLS</option>
+          </select></div>
+      </div>
+
+      <div role="tabpanel" id="panel-net-limits" aria-labelledby="tab-net-limits" hidden>
+        <div class="row"><label for="max-conn">Max connections</label>
+          <input type="number" id="max-conn" value="100"></div>
+        <div class="row"><label for="rate-limit">Rate limit (req/s)</label>
+          <input type="number" id="rate-limit" value="50"></div>
+      </div>
+    </section>
+
+    <section role="tabpanel" id="panel-advanced" aria-labelledby="tab-advanced" hidden>
+      <!-- collapsed accordions: should NOT be expanded into the snapshot -->
+      <details>
+        <summary>Experimental features</summary>
+        <div class="row"><label for="exp-a">Enable feature A</label><input type="checkbox" id="exp-a"></div>
+        <div class="row"><label for="exp-b">Enable feature B</label><input type="checkbox" id="exp-b"></div>
+        <div class="row"><label for="exp-c">Enable feature C</label><input type="checkbox" id="exp-c"></div>
+      </details>
+      <details open>
+        <summary>Danger zone</summary>
+        <div class="row"><button type="button" id="reset-all">Reset all settings</button></div>
+        <div class="row"><button type="button" id="delete-org">Delete organisation</button></div>
+      </details>
+    </section>
+
+    <!-- a long uniform list: repeat-pattern compression target -->
+    <h2>API keys</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Created</th><th>Actions</th></tr></thead>
+      <tbody id="keys"></tbody>
+    </table>
+
+    <div class="toolbar">
+      <button type="button" id="save" data-testid="save">Save</button>
+      <button type="button" id="cancel">Cancel</button>
+    </div>
+    <p id="status" role="status"></p>
+  </main>
+</div>
+
+<dialog id="confirm">
+  <h2>Confirm delete</h2>
+  <p>This cannot be undone.</p>
+  <div class="row">
+    <button type="button" id="confirm-yes">Delete</button>
+    <button type="button" id="confirm-no">Cancel</button>
+  </div>
+</dialog>
+
+<script>
+  // 40 uniform rows — exercises repeat-pattern compression.
+  const tbody = document.getElementById('keys');
+  for (let i = 1; i <= 40; i++) {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>key-' + i + '</td><td>2026-01-' + String((i % 28) + 1).padStart(2, '0') + '</td>' +
+      '<td><button type="button" class="rotate">Rotate</button> ' +
+      '<button type="button" class="revoke">Revoke</button></td>';
+    tbody.appendChild(tr);
+  }
+
+  function activate(tablist, tabId) {
+    tablist.querySelectorAll('[role=tab]').forEach((tab) => {
+      const selected = tab.id === tabId;
+      tab.setAttribute('aria-selected', String(selected));
+      const panel = document.getElementById(tab.getAttribute('aria-controls'));
+      if (panel) panel.hidden = !selected;
+    });
+  }
+  document.querySelectorAll('[role=tablist]').forEach((tablist) => {
+    tablist.addEventListener('click', (e) => {
+      const tab = e.target.closest('[role=tab]');
+      if (tab) activate(tablist, tab.id);
+    });
+  });
+
+  document.getElementById('save').addEventListener('click', () => {
+    const status = document.getElementById('status');
+    const host = document.getElementById('smtp-host');
+    // Deliberate async + validation, so settle detection and error surfacing
+    // have something real to observe.
+    status.textContent = 'Saving…';
+    setTimeout(() => {
+      if (host && host.value.trim() === '' && !document.getElementById('panel-net-smtp').hidden) {
+        host.setAttribute('aria-invalid', 'true');
+        status.textContent = 'SMTP host is required';
+        status.className = 'err';
+      } else {
+        status.textContent = 'Saved';
+        status.className = '';
+      }
+    }, 250);
+  });
+
+  document.getElementById('delete-org').addEventListener('click', () => {
+    document.getElementById('confirm').showModal();
+  });
+  document.getElementById('confirm-no').addEventListener('click', () => {
+    document.getElementById('confirm').close();
+  });
+</script>
+</body>
+</html>

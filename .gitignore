@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# faster-browser-agent local state
+.fba/
+.fba-profiles/
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/
+*.log
+npm-debug.log*
+pnpm-debug.log*

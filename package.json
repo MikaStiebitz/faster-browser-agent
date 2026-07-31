@@ -1,0 +1,62 @@
+{
+  "name": "faster-browser-agent",
+  "version": "0.1.0",
+  "description": "A code-aware, token-efficient browser automation MCP server for AI agents. Deep-links instead of clicking, compresses perception, caches trajectories, and isolates browser state per git workspace.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "bin": {
+    "fba": "./dist/cli.js",
+    "faster-browser-agent": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/server.d.ts",
+      "default": "./dist/mcp/server.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "playwright",
+    "browser-automation",
+    "ai-agent",
+    "llm",
+    "agent",
+    "claude",
+    "browser",
+    "web-agent"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "playwright-core": "^1.56.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
