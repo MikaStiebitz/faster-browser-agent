@@ -42,6 +42,35 @@ import type {
 /** What the injected runtime returns; the session adds the version counter. */
 export type RuntimeSnapshot = Omit<PageSnapshot, 'version'>;
 
+export interface FindQuery {
+  role?: string;
+  name?: string;
+  text?: string;
+  label?: string;
+  placeholder?: string;
+  testId?: string;
+  within?: Ref;
+  limit?: number;
+}
+
+/** One ranked candidate from an in-page search. */
+export interface FindCandidate {
+  ref: Ref;
+  role: string;
+  name: string;
+  score: number;
+  /**
+   * Tab path the candidate actually lives under, outermost first.
+   *
+   * This is per-candidate rather than per-page on purpose: a search regularly
+   * surfaces controls sitting in tab panels that are not the open one, and
+   * telling the caller they are reachable "here" would be a lie that costs a
+   * failed click plus a recovery round trip. Absent means "not inside any tab
+   * panel", i.e. reachable without switching tabs.
+   */
+  tabPath?: string[];
+}
+
 /**
  * The API the injected runtime exposes as `window.__fba`.
  *
@@ -67,7 +96,7 @@ export interface PageRuntimeApi {
   /** Rich description of one element, used for diagnostics and healing. */
   describe(ref: Ref): { role: string; name: string; value?: string; visible: boolean; path: string } | null;
   /** Ranked candidate refs for a fuzzy name, used by the resolver's fallbacks. */
-  find(query: { role?: string; name?: string; text?: string; label?: string; placeholder?: string; testId?: string; within?: Ref; limit?: number }): Array<{ ref: Ref; role: string; name: string; score: number }>;
+  find(query: FindQuery): FindCandidate[];
   /** Tab/section structure of the page, independent of a full snapshot. */
   structure(): { tabs: Array<{ ref: Ref; label: string; selected: boolean; group?: string }>; sections: Array<{ ref: Ref; label: string; collapsed: boolean }> };
   /** Scroll a ref into view; returns false when the ref is gone. */
@@ -139,7 +168,7 @@ export interface Session {
   observe(options?: ObserveOptions): Promise<Observation>;
 
   /** Ask the in-page runtime for candidate elements. */
-  find(query: Parameters<PageRuntimeApi['find']>[0]): Promise<Array<{ ref: Ref; role: string; name: string; score: number }>>;
+  find(query: FindQuery): Promise<FindCandidate[]>;
 
   /** Tab and section structure without a full snapshot. */
   structure(): Promise<Awaited<ReturnType<PageRuntimeApi['structure']>>>;
