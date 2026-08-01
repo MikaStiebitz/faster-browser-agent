@@ -796,6 +796,119 @@ export interface ObservedEndpoint {
 }
 
 // ---------------------------------------------------------------------------
+// Site memory — what the agent learns by browsing
+// ---------------------------------------------------------------------------
+
+/**
+ * The code index only helps for applications whose source is in the workspace.
+ * For every other site the agent would start from zero on every visit, which is
+ * exactly the blindness that makes generic drivers slow.
+ *
+ * Site memory closes that gap: it is built as a *side effect* of ordinary
+ * observation — no extra calls, no extra navigations — and turns the second
+ * visit to any site into a lookup instead of an exploration.
+ */
+export interface PageMemory {
+  /** URL path with volatile segments generalised, e.g. `/users/:id`. */
+  pattern: string;
+  title?: string;
+  /** Tab paths seen on this page, outermost first. */
+  tabs: string[][];
+  /** Interactive elements counted on the last visit. */
+  controlCount: number;
+  visits: number;
+  lastSeenAt: number;
+}
+
+/**
+ * A control seen somewhere on the site, with the information needed to get
+ * back to it: which page, and which tab path within that page.
+ */
+export interface ControlMemory {
+  name: string;
+  role: SnapRole;
+  /** Page pattern the control was seen on. */
+  page: string;
+  /** Tab path within that page; absent means no tab switch needed. */
+  tabPath?: string[];
+  testId?: string;
+  /** Times observed — a proxy for how reliably it is there. */
+  seen: number;
+  lastSeenAt: number;
+}
+
+/** A learned navigation edge: activating `via` on `from` led to `to`. */
+export interface TransitionMemory {
+  from: string;
+  via: string;
+  to: string;
+  count: number;
+  lastSeenAt: number;
+}
+
+/** One observed settle distribution. */
+export interface TimingSample {
+  samples: number;
+  /** Median settle time in ms. */
+  p50: number;
+  /** 90th percentile settle time in ms. */
+  p90: number;
+}
+
+/**
+ * What kind of settle a sample describes.
+ *
+ * Kept apart because a page load and a tab click are not the same event: mixing
+ * them produces one median that is too loose for interactions and too tight for
+ * navigations, which is worse than the generic default it replaces.
+ */
+export type SettleKind = 'navigation' | 'interaction';
+
+/** Observed settle durations, used to adapt the wait budget per origin. */
+export interface TimingMemory extends TimingSample {
+  navigation?: TimingSample;
+  interaction?: TimingSample;
+}
+
+export interface SiteMemory {
+  origin: string;
+  schema: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  visits: number;
+  pages: PageMemory[];
+  controls: ControlMemory[];
+  transitions: TransitionMemory[];
+  endpoints: ObservedEndpoint[];
+  timing: TimingMemory;
+}
+
+export const SITE_MEMORY_SCHEMA = 1;
+
+/** Caps that keep a memory file small enough to load and merge cheaply. */
+export const SITE_MEMORY_LIMITS = {
+  pages: 200,
+  controls: 800,
+  transitions: 300,
+  endpoints: 80,
+  /** Settle samples retained for the percentile estimate. */
+  timingSamples: 50,
+} as const;
+
+/** A ranked answer from site memory to "where is X on this site?". */
+export interface SiteMatch {
+  name: string;
+  role: SnapRole;
+  page: string;
+  tabPath?: string[];
+  testId?: string;
+  /** Absolute URL when the origin and page pattern have no unresolved params. */
+  url?: string;
+  score: number;
+  seen: number;
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
@@ -826,6 +939,11 @@ export interface FbaConfig {
   codeIndex: boolean;
   /** Enable the skill cache. */
   skills: boolean;
+  /**
+   * Enable site memory — what the agent learns about a site by browsing it.
+   * Unlike the code index this works for sites whose source you do not have.
+   */
+  siteMemory: boolean;
   /** Enable network endpoint observation. */
   networkObserver: boolean;
   /** Dev server base URL override. */

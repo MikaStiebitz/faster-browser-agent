@@ -45,6 +45,7 @@ export function defaultConfig(): FbaConfig {
     viewport: { width: 1440, height: 900 },
     codeIndex: true,
     skills: true,
+    siteMemory: true,
     networkObserver: true,
     logLevel: 'warn',
   };
@@ -148,6 +149,7 @@ export function loadConfig(options: LoadConfigOptions = {}): FbaConfig {
     maxContexts: envInt('FBA_MAX_CONTEXTS'),
     codeIndex: envBool('FBA_CODE_INDEX'),
     skills: envBool('FBA_SKILLS'),
+    siteMemory: envBool('FBA_SITE_MEMORY'),
     networkObserver: envBool('FBA_NETWORK_OBSERVER'),
     baseUrl: process.env.FBA_BASE_URL,
     locale: process.env.FBA_LOCALE,
@@ -189,6 +191,7 @@ export function paths(config: FbaConfig) {
     profiles: join(config.home, 'profiles'),
     skills: join(config.home, 'skills'),
     indexes: join(config.home, 'indexes'),
+    sites: join(config.home, 'sites'),
     logs: join(config.home, 'logs'),
   };
 }

@@ -27,6 +27,7 @@ import { createLogger } from '../util/logger.js';
 import { applyBlocking, type BlockingHandle } from './blocking.js';
 import { launchPersistentContext } from './launcher.js';
 import { FsProfileManager } from './profile.js';
+import type { SiteMemoryStore } from '../site/memory.js';
 import { PageSession, createSession } from './session.js';
 
 const logger = createLogger('pool');
@@ -41,6 +42,12 @@ const REAP_INTERVAL_MS = 30_000;
 export interface PoolDeps {
   config: FbaConfig;
   profiles?: ProfileManager;
+  /**
+   * Per-origin site memory. Shared across every session in the pool on purpose:
+   * what one tab learns about a site is immediately useful to the next, and to
+   * the next agent that opens the same origin.
+   */
+  memory?: SiteMemoryStore;
 }
 
 interface ContextEntry {
@@ -59,6 +66,7 @@ interface ContextEntry {
 export class DefaultBrowserPool implements BrowserPool {
   private readonly config: FbaConfig;
   private readonly profiles: ProfileManager;
+  private readonly memory: SiteMemoryStore | undefined;
 
   private readonly contexts = new Map<string, ContextEntry>();
   /**
@@ -80,6 +88,7 @@ export class DefaultBrowserPool implements BrowserPool {
   constructor(deps: PoolDeps) {
     this.config = deps.config;
     this.profiles = deps.profiles ?? new FsProfileManager(deps.config);
+    this.memory = deps.memory;
     livePools.add(this);
     installExitHandlers();
   }
@@ -193,6 +202,9 @@ export class DefaultBrowserPool implements BrowserPool {
 
   private async doShutdown(): Promise<void> {
     livePools.delete(this);
+    // Buffered learning is written before the browsers go away; losing it would
+    // silently undo the whole point of the memory layer.
+    await this.memory?.close().catch(() => undefined);
     if (this.reaper) {
       clearInterval(this.reaper);
       this.reaper = undefined;
@@ -345,6 +357,7 @@ export class DefaultBrowserPool implements BrowserPool {
     const session = await createSession(page, {
       config: this.config,
       workspaceId: entry.workspace.id,
+      ...(this.memory ? { memory: this.memory } : {}),
       onClose: (id) => {
         entry.sessions.delete(id);
         this.sessionIndex.delete(id);
@@ -443,8 +456,8 @@ let sharedPool: DefaultBrowserPool | undefined;
  * process would fight over the same profile directories and the loser would
  * silently get ephemeral clones.
  */
-export function getSharedPool(config: FbaConfig): DefaultBrowserPool {
-  if (!sharedPool) sharedPool = new DefaultBrowserPool({ config });
+export function getSharedPool(config: FbaConfig, memory?: SiteMemoryStore): DefaultBrowserPool {
+  if (!sharedPool) sharedPool = new DefaultBrowserPool({ config, ...(memory ? { memory } : {}) });
   return sharedPool;
 }
 

@@ -37,6 +37,7 @@ import type {
 import { FbaError, errorMessage, toFbaError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { bestMatch, matchKey, normalizeText, truncate } from '../util/text.js';
+import type { SiteMemoryStore } from '../site/memory.js';
 import { fillForm } from './form.js';
 import { describeTarget, selectorForRef, targetResolver } from './resolve.js';
 
@@ -58,6 +59,24 @@ const INTER_STEP_SETTLE: SettleOptions = { networkQuietMs: 150, domQuietMs: 150,
 
 /** Never give a single step less than this, however many steps there are. */
 const MIN_STEP_TIMEOUT_MS = 2_000;
+
+/**
+ * A human-meaningful label for whatever the step activated.
+ *
+ * Used as the edge label in learned navigation, so it has to be the thing a
+ * later query would ask for ("Settings"), not an internal ref.
+ */
+function transitionLabel(step: ActionStep, resolution: ResolutionInfo | undefined): string | undefined {
+  if (step.do === 'selectTab') return step.path.join(' > ');
+  if (step.do === 'goto') return undefined;
+  const target = 'target' in step ? step.target : undefined;
+  const named = target?.name ?? target?.label ?? target?.text ?? target?.testId;
+  if (named) return truncate(normalizeText(named), 60);
+  // Fall back to whatever the resolver actually matched — after healing, that
+  // is often more accurate than what the caller asked for.
+  if (resolution?.description) return truncate(normalizeText(resolution.description), 60);
+  return undefined;
+}
 
 /** Steps after which the page is likely to be mid-flight. */
 function mutates(step: ActionStep): boolean {
@@ -108,15 +127,44 @@ export interface ExecutorOptions {
    * by the caller so this layer keeps no dependency on L3.
    */
   onNavigate?: (session: Session, urlOrRoute: { url?: string; route?: string }) => Promise<void>;
+  /**
+   * Optional sink for learned navigation edges.
+   *
+   * The executor is the only layer that knows *what was activated* to cause a
+   * navigation, which is exactly the edge worth remembering: "clicking Settings
+   * on / leads to /settings". Recording it here costs one string comparison.
+   */
+  memory?: Pick<SiteMemoryStore, 'recordTransition'>;
 }
 
 export class DefaultExecutor implements Executor {
   private readonly resolver: TargetResolver;
   private readonly onNavigate?: ExecutorOptions['onNavigate'];
+  private readonly memory?: ExecutorOptions['memory'];
 
   constructor(options: ExecutorOptions = {}) {
     this.resolver = options.resolver ?? targetResolver;
     if (options.onNavigate) this.onNavigate = options.onNavigate;
+    if (options.memory) this.memory = options.memory;
+  }
+
+  /**
+   * Remember "activating X on page A led to page B".
+   *
+   * Only real cross-page moves are recorded; a click that stays put teaches
+   * nothing and would swamp the table.
+   */
+  private learnTransition(session: Session, step: ActionStep, ctx: StepContext, urlBefore: string): void {
+    if (!this.memory) return;
+    const urlAfter = safeUrl(session);
+    if (!urlAfter || urlAfter === urlBefore) return;
+    const via = transitionLabel(step, ctx.resolution);
+    if (!via) return;
+    try {
+      this.memory.recordTransition(urlBefore, via, urlAfter);
+    } catch {
+      /* learning must never fail an action */
+    }
   }
 
   async run(session: Session, steps: ActionStep[], options: ActOptions = {}): Promise<ActResult> {
@@ -172,6 +220,9 @@ export class DefaultExecutor implements Executor {
       let outcome: StepOutcome | undefined;
       let error: FbaError | undefined;
       let retried = false;
+      // Only read the url when something is actually listening: doing work for
+      // a disabled feature is waste, and this runs once per step.
+      const urlBefore = this.memory ? safeUrl(session) : '';
 
       try {
         outcome = await this.execute(session, step, ctx);
@@ -209,6 +260,8 @@ export class DefaultExecutor implements Executor {
       }
 
       const ms = Date.now() - stepStarted;
+
+      if (!error && urlBefore) this.learnTransition(session, step, ctx, urlBefore);
 
       if (error) {
         failedAt ??= i;

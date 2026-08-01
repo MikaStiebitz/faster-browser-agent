@@ -54,6 +54,7 @@ But the browser was never the bottleneck. This is:
 | Fill a 30-field settings form | ~30 model calls | **1 call** (`browser_form`) |
 | Repeat a flow you already ran | full model-driven run | **0 model calls** (skill replay, 675 ms measured) |
 | Wait after an action | fixed 2 s sleeps | settle heuristic, typically 300–500 ms |
+| Revisit a site you've seen before | starts blind again | answers from memory; **44 % less waiting per settle** |
 
 ---
 
@@ -114,8 +115,8 @@ latency cost. Nine coarse tools, not twenty fine-grained ones. There is delibera
 | `browser_snapshot` | Observe — a diff by default, full tree on request |
 | `browser_act` | Run a guarded action **program**: many steps, one call |
 | `browser_form` | Fill many fields at once, by human label |
-| `browser_find` | Locate by meaning across the live page *and* the code index |
-| `browser_map` | The app's route/tab/config map — usually without a browser |
+| `browser_find` | Locate by meaning across the live page, the code index *and* what past visits taught |
+| `browser_map` | The app's route/tab/config map — from source, from memory, or both |
 | `browser_extract` | Structured extraction, or replay an API the page itself called |
 | `browser_skill` | Save and replay compiled trajectories (zero model calls) |
 | `browser_session` | Per-workspace browser state: list, warm, reset, seed |
@@ -219,7 +220,64 @@ Replay is pure execution — **zero model calls**, 675 ms measured. Every `asser
 with the skill doubles as a verifier, so a changed UI fails fast and honestly instead of
 half-executing.
 
-### 5. Parallel agents get independent browsers
+### 5. It learns every site it visits — source code or not
+
+The code index only covers applications whose source is in your workspace. For
+everything else — a vendor admin panel, a SaaS dashboard, someone else's app —
+site memory does the same job, built from browsing rather than from reading.
+
+It is written as a **side effect of ordinary observation**: no extra calls, no
+extra navigations, no model involvement. Every snapshot the agent was going to
+take anyway is folded into a per-origin record of
+
+- **pages**, with volatile segments generalised (`/users/17` and `/users/24`
+  become `/users/:id`) and the tab structures seen on each,
+- **controls**, each tagged with the page *and tab path* it lives under,
+- **navigation edges** — "activating *Settings* on `/` leads to `/settings`",
+- **API endpoints** the page called,
+- **settle timings**, split into navigation and interaction.
+
+The payoff on the second visit, from a fresh process:
+
+```console
+$ # first visit — nothing known
+$ browser_find { query: "smtp port" }
+page (6):
+  e35 spinbutton "SMTP port" (1.00) — needs selectTab ["Network","SMTP"]
+
+$ # second visit, new process — answered from memory
+learned (4):
+  spinbutton "SMTP port" (1.00) — at http://acme.test/settings,
+      tab Network > SMTP [data-testid=smtp-port] — seen 4x
+```
+
+And `browser_map` now produces a map of a site it has no source for at all.
+
+**The wait budget adapts too.** Measured on the fixture, same workload each time,
+the only variable being where the settle windows come from:
+
+| | median settle |
+| --- | --- |
+| memory off (generic 300 ms / 200 ms default) | 228 ms |
+| memory on, learning during the run | 128 ms (switches at the 6th sample) |
+| memory on, primed | **128 ms — 44 % less waiting** |
+
+Navigation and interaction settles are kept in **separate** distributions on
+purpose. A page load and a tab click are not the same event, and a budget
+derived from both at once is simultaneously too loose for the fast one and too
+tight for the slow one — worse than the generic default it replaces.
+
+Inspect and manage it:
+
+```bash
+fba sites list
+fba sites show http://acme.test
+fba sites forget http://acme.test
+```
+
+Set `FBA_SITE_MEMORY=0` to switch it off entirely.
+
+### 6. Parallel agents get independent browsers
 
 Each workspace root maps to its own Chromium profile directory. Git worktrees are detected
 properly (a `.git` *file* → resolve `gitdir:`/`commondir`), so two agents on two branches
@@ -247,6 +305,7 @@ fba open      open a url or route and print what the agent would see
 fba act       run an action program from JSON
 fba skill     manage and replay compiled trajectories
 fba profiles  manage per-workspace browser profiles
+fba sites     inspect what browsing has taught the agent (list | show | forget)
 fba warm      pre-launch the browser (removes cold start from the first call)
 fba bench     micro-benchmark the whole pipeline
 ```
@@ -263,6 +322,7 @@ Precedence: explicit overrides → environment → `.fbarc.json` in the workspac
 | `FBA_CHROMIUM_PATH` | auto-detected | Browser executable |
 | `FBA_HEADLESS` | `true` | |
 | `FBA_BASE_URL` | inferred from source | Dev-server origin for route deep-links |
+| `FBA_SITE_MEMORY` | `true` | Learn pages/controls/timings per origin |
 | `FBA_BLOCKING` | `true` | Abort images/media/fonts/analytics |
 | `FBA_MAX_NODES` | `300` | Snapshot node cap |
 | `FBA_TIMEOUT_MS` | `15000` | |
@@ -290,6 +350,9 @@ Worth knowing before you adopt it:
 
 - **Cross-origin iframes are not traversed.** The snapshot notes their presence but does not
   descend into them.
+- **Site memory needs a few visits before it pays.** The adaptive settle budget
+  deliberately stays silent below five samples per kind, because a budget guessed
+  from two samples is worse than the default.
 - **The code index is regex-based, not a parser.** That is what makes it fast and
   framework-agnostic; it also means unusual routing setups may be missed. Implausible
   extractions are filtered out rather than guessed at, so a miss shows up as a missing
@@ -305,7 +368,7 @@ Worth knowing before you adopt it:
 ```bash
 npm install
 npm run build
-npm test          # 269 tests, including real-browser integration tests
+npm test          # 286 tests, including real-browser integration tests
 npm run typecheck
 ```
 

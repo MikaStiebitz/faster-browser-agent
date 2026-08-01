@@ -39,6 +39,8 @@ import type {
 } from '../contracts.js';
 import { replayEndpoint } from '../net/observer.js';
 import { serializeObservation } from '../runtime/serialize.js';
+import { originOf as originOfUrl } from '../site/digest.js';
+import type { SiteMemoryStore } from '../site/memory.js';
 import { compileFromSteps } from '../skills/runner.js';
 import { normalizeOrigin } from '../skills/store.js';
 import type {
@@ -50,6 +52,7 @@ import type {
   FormFillRequest,
   Observation,
   ObservedEndpoint,
+  SiteMatch,
   SkillRecord,
   StepResult,
   Target,
@@ -72,6 +75,13 @@ export interface ToolContext {
   skills: SkillStore;
   runner: SkillRunner;
   executor: Executor;
+  /**
+   * What the agent has learned about sites by browsing them.
+   *
+   * The code index only covers applications whose source is in the workspace;
+   * this covers everything else, which is most of the web.
+   */
+  memory?: SiteMemoryStore;
 }
 
 export interface ToolDefinition {
@@ -694,6 +704,36 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
               );
             }
           }
+
+          // The learned map. This is what makes browser_map useful on a site
+          // whose source we do not have — the code index is empty there, but
+          // every previous visit has been contributing to this.
+          const origin = originOfUrl(sessionUrl(session));
+          const learned = ctx.memory && origin ? await ctx.memory.get(origin) : undefined;
+          if (learned && learned.pages.length > 0) {
+            const pages = [...learned.pages].sort((a, b) => b.visits - a.visits).slice(0, 15);
+            lines.push('', `learned about ${learned.origin} (${learned.visits} visits, ${learned.controls.length} controls):`);
+            for (const page of pages) {
+              const tabs = page.tabs.length > 0
+                ? `  tabs: ${page.tabs.map((t) => t.join(' > ')).join(' | ')}`
+                : '';
+              lines.push(`  ${page.pattern}${page.title ? `  "${truncate(page.title, 40)}"` : ''}  ${page.controlCount} controls${tabs}`);
+            }
+            if (learned.transitions.length > 0) {
+              const top = [...learned.transitions].sort((a, b) => b.count - a.count).slice(0, 8);
+              lines.push('  navigation learned:');
+              for (const t of top) lines.push(`    ${t.from} --[${truncate(t.via, 30)}]--> ${t.to}  (${t.count}x)`);
+            }
+            if (learned.endpoints.length > 0) {
+              const top = [...learned.endpoints].sort((a, b) => b.hits - a.hits).slice(0, 5);
+              lines.push('  api endpoints seen:');
+              for (const e of top) lines.push(`    ${e.method} ${e.pattern}${e.responseShape ? ` -> ${truncate(e.responseShape, 60)}` : ''}`);
+            }
+            if (learned.timing.samples >= 5) {
+              lines.push(`  settles in ~${learned.timing.p50}ms (p90 ${learned.timing.p90}ms, ${learned.timing.samples} samples) — wait budget adapted to this`);
+            }
+          }
+
           const line = pageLine(session);
           if (line) lines.push('', line);
         }
@@ -734,6 +774,34 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
  * Both paths run outermost-first, so "reachable right now" is exactly
  * "the candidate's path is a prefix of the page's selected path".
  */
+/**
+ * Render one remembered control, leading with how to get back to it.
+ *
+ * The page and tab path are the whole value of the memory: without them a
+ * remembered name is just trivia, with them it is a two-step plan.
+ */
+/**
+ * Current url of a session, defensively.
+ *
+ * Site memory is an optional enhancement, so a session that cannot report a url
+ * must degrade to "no memory" rather than failing the tool call that asked for
+ * something else entirely.
+ */
+function sessionUrl(session: Session): string {
+  try {
+    return session.page.url();
+  } catch {
+    return '';
+  }
+}
+
+function siteMatchLine(match: SiteMatch): string {
+  const where = match.url ?? match.page;
+  const tab = match.tabPath && match.tabPath.length > 0 ? `, tab ${match.tabPath.join(' > ')}` : '';
+  const testId = match.testId ? ` [data-testid=${match.testId}]` : '';
+  return `${match.role} "${truncate(normalizeText(match.name), 60)}" (${match.score.toFixed(2)}) — at ${where}${tab}${testId} — seen ${match.seen}x`;
+}
+
 function sameTabPath(candidate: readonly string[], current: readonly string[] | undefined): boolean {
   if (!current || current.length < candidate.length) return false;
   for (let i = 0; i < candidate.length; i += 1) {
@@ -787,7 +855,20 @@ async function findText(
     }
   }
 
-  // 2. The code index. Works with no browser at all and is the only source that
+  // 2. Site memory: what previous visits to THIS origin taught us. This is the
+  //    answer for sites whose source we do not have — it needs no browser call
+  //    when the control is on another page, and it names the tab path to get
+  //    there, so a second visit is a lookup rather than an exploration.
+  const memoryOrigin = session ? originOfUrl(sessionUrl(session)) : undefined;
+  if (ctx.memory && memoryOrigin && kind !== 'route' && kind !== 'config' && kind !== 'nav') {
+    const remembered = await ctx.memory.search(memoryOrigin, args.query, limit);
+    if (remembered.length > 0) {
+      lines.push(`learned (${remembered.length}):`);
+      for (const match of remembered) lines.push(`  ${siteMatchLine(match)}`);
+    }
+  }
+
+  // 3. The code index. Works with no browser at all and is the only source that
   //    can produce a deep link.
   if (kind !== 'element') {
     const index = await ctx.indexer.get(workspaceRoot);

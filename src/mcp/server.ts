@@ -24,6 +24,7 @@ import { FsSkillStore } from '../skills/store.js';
 import type { FbaConfig } from '../types.js';
 import { errorMessage } from '../util/errors.js';
 import { createLogger, setLogLevel } from '../util/logger.js';
+import { FsSiteMemoryStore } from '../site/memory.js';
 import { createTools, resolveNavigation, type ToolContext } from './tools.js';
 
 const logger = createLogger('mcp:server');
@@ -60,7 +61,10 @@ export function createServer(ctx: Partial<ToolContext> = {}): ServerHandle {
   // dirs and the loser would silently get cookie-less ephemeral clones.
   // A pool we created is ours to close; an injected one belongs to its owner.
   const ownsPool = ctx.pool === undefined;
-  const pool = ctx.pool ?? getSharedPool(config);
+  // Site memory must be created before the pool: the pool hands it to every
+  // session it opens, and a pool created without it would never learn.
+  const memory = ctx.memory ?? (config.siteMemory ? new FsSiteMemoryStore(config) : undefined);
+  const pool = ctx.pool ?? getSharedPool(config, memory);
 
   /**
    * Route resolution for `{ do: 'goto', route }` steps.
@@ -77,9 +81,9 @@ export function createServer(ctx: Partial<ToolContext> = {}): ServerHandle {
     await session.goto(resolved.url);
   };
 
-  const executor = ctx.executor ?? new DefaultExecutor({ onNavigate });
+  const executor = ctx.executor ?? new DefaultExecutor({ onNavigate, ...(memory ? { memory } : {}) });
   const runner = ctx.runner ?? new DefaultSkillRunner(skills, executor);
-  const context: ToolContext = { config, pool, indexer, skills, runner, executor };
+  const context: ToolContext = { config, pool, indexer, skills, runner, executor, ...(memory ? { memory } : {}) };
 
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },

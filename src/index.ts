@@ -54,6 +54,19 @@ export {
 
 export { PAGE_RUNTIME_SOURCE, RUNTIME_VERSION } from './runtime/index.js';
 
+// --- L3: what the agent learns by browsing ---------------------------------
+
+export {
+  FsSiteMemoryStore,
+  digestSnapshot,
+  originOf,
+  originSlug,
+  pagePattern,
+  urlForPattern,
+  type PageDigest,
+  type SiteMemoryStore,
+} from './site/index.js';
+
 export {
   diffCost,
   diffSnapshots,
@@ -118,6 +131,7 @@ import { loadConfig } from './config.js';
 import type { BrowserPool, CodeIndexer, Executor, Session, SkillRunner, SkillStore } from './contracts.js';
 import { DefaultExecutor } from './executor/act.js';
 import { resolveNavigation } from './mcp/tools.js';
+import { FsSiteMemoryStore, type SiteMemoryStore } from './site/memory.js';
 import { DefaultSkillRunner } from './skills/runner.js';
 import { FsSkillStore } from './skills/store.js';
 import type { FbaConfig } from './types.js';
@@ -130,6 +144,8 @@ export interface AgentBrowser {
   skills: SkillStore;
   runner: SkillRunner;
   executor: Executor;
+  /** Per-origin knowledge accumulated by browsing; undefined when disabled. */
+  memory?: SiteMemoryStore;
   /** Close every browser this process opened and release the profile locks. */
   shutdown(): Promise<void>;
 }
@@ -148,9 +164,11 @@ export async function createAgentBrowser(overrides?: Partial<FbaConfig>): Promis
 
   const indexer = new FsCodeIndexer(config);
   const skills = new FsSkillStore(config);
-  const pool = getSharedPool(config);
+  const memory = config.siteMemory ? new FsSiteMemoryStore(config) : undefined;
+  const pool = getSharedPool(config, memory);
 
   const executor = new DefaultExecutor({
+    ...(memory ? { memory } : {}),
     onNavigate: async (session: Session, spec: { url?: string; route?: string }): Promise<void> => {
       const workspace = await detectWorkspace(config.workspace ?? process.cwd());
       const resolved = await resolveNavigation({ config, indexer }, workspace.root, spec);
@@ -168,6 +186,7 @@ export async function createAgentBrowser(overrides?: Partial<FbaConfig>): Promis
     skills,
     runner,
     executor,
+    ...(memory ? { memory } : {}),
     shutdown: shutdownSharedPool,
   };
 }

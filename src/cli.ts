@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { DefaultBrowserPool, getSharedPool, shutdownSharedPool } from './browser/pool.js';
 import { browserSearchPaths, checkBrowser, resolveExecutablePath } from './browser/launcher.js';
 import { FsProfileManager, detectWorkspace } from './browser/profile.js';
+import { FsSiteMemoryStore } from './site/memory.js';
 import { FsCodeIndexer } from './code/indexer.js';
 import { absoluteUrl } from './code/match.js';
 import { loadConfig, paths } from './config.js';
@@ -526,6 +527,11 @@ const COMMANDS: ReadonlyArray<{ name: string; summary: string; usage: string }> 
     name: 'profiles',
     summary: 'manage per-workspace browser profiles',
     usage: 'fba profiles list|reset|seed [id] [--from <id> --to <id>]',
+  },
+  {
+    name: 'sites',
+    summary: 'inspect what the agent has learned about sites by browsing them',
+    usage: 'fba sites list|show|forget [origin] [--json]',
   },
   {
     name: 'warm',
@@ -1828,6 +1834,124 @@ async function cmdBench(ctx: Ctx): Promise<number> {
 // Dispatch
 // ---------------------------------------------------------------------------
 
+/**
+ * `fba sites` — the learned counterpart to `fba index`.
+ *
+ * `index` shows what we know from source; this shows what we know from having
+ * been there. Together they are why the second visit to anything is cheap.
+ */
+async function cmdSites(ctx: Ctx): Promise<number> {
+  const usage = usageFor('sites');
+  rejectUnknownFlags(ctx.flags, [], usage);
+
+  const store = new FsSiteMemoryStore(ctx.config);
+  const sub = ctx.args[0] ?? 'list';
+
+  switch (sub) {
+    case 'list': {
+      const sites = await store.list();
+      if (ctx.json) {
+        emitJson(ctx, { sites });
+        return EXIT_OK;
+      }
+      if (sites.length === 0) {
+        ctx.io.out(ctx.style.dim(`nothing learned yet — browse a site and it will show up in ${paths(ctx.config).sites}`));
+        return EXIT_OK;
+      }
+      for (const line of renderTable(
+        sites.map((s) => [s.origin, String(s.visits), String(s.pages), String(s.controls), formatAge(s.lastSeenAt)]),
+        { head: ['origin', 'visits', 'pages', 'controls', 'last seen'], style: ctx.style },
+      )) {
+        ctx.io.out(line);
+      }
+      return EXIT_OK;
+    }
+
+    case 'show': {
+      const origin = ctx.args[1];
+      if (!origin) {
+        ctx.io.err(`usage: ${usage}`);
+        return EXIT_USAGE;
+      }
+      const memory = await store.get(origin);
+      if (!memory) {
+        ctx.io.err(`nothing learned about ${origin} yet`);
+        return EXIT_FAILURE;
+      }
+      if (ctx.json) {
+        emitJson(ctx, memory);
+        return EXIT_OK;
+      }
+      ctx.io.out(`${ctx.style.bold(memory.origin)}  ${memory.visits} visits, last ${formatAge(memory.lastSeenAt)}`);
+      ctx.io.out('');
+      ctx.io.out(ctx.style.bold('PAGES'));
+      for (const line of renderTable(
+        [...memory.pages]
+          .sort((a, b) => b.visits - a.visits)
+          .slice(0, 25)
+          .map((p) => [
+            p.pattern,
+            p.title ?? '',
+            String(p.controlCount),
+            String(p.visits),
+            p.tabs.map((t) => t.join(' > ')).join(' | '),
+          ]),
+        { head: ['pattern', 'title', 'controls', 'visits', 'tabs'], style: ctx.style, indent: '  ' },
+      )) {
+        ctx.io.out(line);
+      }
+      if (memory.transitions.length > 0) {
+        ctx.io.out('');
+        ctx.io.out(ctx.style.bold('NAVIGATION LEARNED'));
+        for (const line of renderTable(
+          [...memory.transitions]
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 20)
+            .map((t) => [t.from, t.via, t.to, `${t.count}x`]),
+          { head: ['from', 'via', 'to', 'seen'], style: ctx.style, indent: '  ' },
+        )) {
+          ctx.io.out(line);
+        }
+      }
+      if (memory.endpoints.length > 0) {
+        ctx.io.out('');
+        ctx.io.out(ctx.style.bold('API ENDPOINTS SEEN'));
+        for (const line of renderTable(
+          [...memory.endpoints]
+            .sort((a, b) => b.hits - a.hits)
+            .slice(0, 15)
+            .map((e) => [e.method, e.pattern, String(e.hits), e.responseShape ?? '']),
+          { head: ['method', 'pattern', 'hits', 'shape'], style: ctx.style, indent: '  ' },
+        )) {
+          ctx.io.out(line);
+        }
+      }
+      if (memory.timing.samples >= 5) {
+        ctx.io.out('');
+        ctx.io.out(
+          `settles in ~${memory.timing.p50}ms (p90 ${memory.timing.p90}ms over ${memory.timing.samples} samples) — the wait budget is adapted to this`,
+        );
+      }
+      return EXIT_OK;
+    }
+
+    case 'forget': {
+      const origin = ctx.args[1];
+      if (!origin) {
+        ctx.io.err(`usage: ${usage}`);
+        return EXIT_USAGE;
+      }
+      const removed = await store.forget(origin);
+      ctx.io.out(removed ? `forgot ${origin}` : `nothing stored for ${origin}`);
+      return removed ? EXIT_OK : EXIT_FAILURE;
+    }
+
+    default:
+      ctx.io.err(`unknown subcommand "${sub}" — usage: ${usage}`);
+      return EXIT_USAGE;
+  }
+}
+
 type CommandFn = (ctx: Ctx) => Promise<number>;
 
 const HANDLERS: Readonly<Record<string, CommandFn>> = {
@@ -1841,6 +1965,8 @@ const HANDLERS: Readonly<Record<string, CommandFn>> = {
   skills: cmdSkill,
   profiles: cmdProfiles,
   profile: cmdProfiles,
+  sites: cmdSites,
+  site: cmdSites,
   warm: cmdWarm,
   bench: cmdBench,
 };

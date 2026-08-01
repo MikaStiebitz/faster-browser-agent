@@ -22,6 +22,9 @@ round trips**, not the browser. One call that does ten things beats ten calls.
 5. **Do not screenshot.** The text snapshot is complete and ~20x cheaper. Only reach for
    a screenshot when the answer is genuinely visual (canvas, chart rendering, layout bugs).
 6. **Save what you'll repeat.** `browser_skill` replays a known flow with zero model calls.
+7. **Trust the memory.** Every page you look at is remembered per origin — including
+   sites with no source code. `browser_find` and `browser_map` answer from it, so a
+   site you have visited before is a lookup, not an exploration.
 
 ## Typical flow
 
@@ -105,6 +108,22 @@ browser_skill { action: "replay", name: "configure-smtp",
 
 Replay verifies itself against the assertions recorded with it. If the UI changed, it
 fails fast and says so — then drive it manually and re-record.
+
+## Sites without source code
+
+The code index needs your app's source. For everything else — a vendor admin panel,
+a SaaS dashboard — the agent learns by browsing, automatically. On a return visit
+`browser_find` answers with where a control lives:
+
+```
+learned (4):
+  spinbutton "SMTP port" (1.00) — at https://admin.vendor.com/settings,
+      tab Network > SMTP [data-testid=smtp-port] — seen 4x
+```
+
+`browser_map` shows the learned page/tab map and the API endpoints the site uses.
+The wait budget adapts to the site too, so repeated use is measurably faster.
+Nothing to enable — just don't be surprised that the second visit is cheap.
 
 ## Parallel agents and browser state
 

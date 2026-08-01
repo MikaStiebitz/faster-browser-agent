@@ -26,7 +26,7 @@ it turns exploration into a lookup.
 
 ```
 L4  MCP surface        9 coarse tools, compact structured results
-L3  Knowledge          code index (routes/selectors/config) + skill cache (compiled trajectories)
+L3  Knowledge          code index (from source) + site memory (from browsing) + skill cache
 L2  Executor           guarded action programs, self-healing resolution, bulk form fill
 L1  Page runtime       one injected script: one-eval snapshot, settle detection, find()
 L0  Browser pool       warm contexts, per-workspace profiles, request blocking
@@ -170,6 +170,47 @@ third-level config tab drops from three navigations and three snapshots to one n
 and one snapshot. And `browser_find {query:"SMTP port"}` answers from the index — with the
 source location — without touching the page.
 
+### Site memory — learning without source code
+
+The code index has a hard boundary: it only helps for applications whose source is
+in the workspace. Site memory covers everything else, and it is built from
+*browsing* rather than from reading.
+
+It is written as a side effect of `observe()` — the one place a fresh, structured
+view of the page already exists. Folding it into a per-origin record costs no
+browser work, no navigation and no model call, which is the only way a learning
+layer stays switched on by default. It accumulates:
+
+- **pages**, with volatile URL segments generalised (`/users/17` → `/users/:id`)
+  and the tab paths observed on each,
+- **controls**, each tagged with the page *and tab path* it lives under — the tab
+  path is recomputed per node, not taken from the page's currently open tab, so a
+  control found in a closed panel is remembered where it actually is,
+- **navigation edges**, recorded by the executor because it is the only layer that
+  knows *what was activated* to cause a navigation,
+- **API endpoints** the page called,
+- **settle timings**.
+
+Storage is one JSON file per origin, buffered and flushed with a read-merge-write
+under an atomic rename. Concurrent agents converge rather than clobber. There is
+deliberately no lock: a lost update costs a little relearning, never correctness,
+and locking would serialise agents that have no other reason to wait on each other.
+
+**The adaptive settle budget** is where this turns into wall-clock. Navigation and
+interaction settles are kept in *separate* distributions — a page load and a tab
+click are different events, and one median over both is simultaneously too loose
+for the fast one and too tight for the slow one. Below five samples per kind the
+budget stays silent, because a guess from two samples is worse than the default.
+
+Measured on the fixture, identical workload, the only variable being where the
+settle windows come from:
+
+| | median settle |
+| --- | --- |
+| memory off (generic 300/200 default) | 228 ms |
+| memory on, learning during the run | 128 ms, switching at the 6th sample |
+| memory on, primed | 128 ms |
+
 ### Skill cache — compiled trajectories
 
 Once a flow succeeds, its action program is stored under `(origin, name)`. Replaying is pure
@@ -209,3 +250,4 @@ costs one round trip while an opaque one costs several.
 | Repeat a known flow | full model-driven run | skill replay, 0 model calls |
 | Wait after an action | fixed 2 s sleeps | settle heuristic, typically 300–500 ms |
 | First browser call | 1–8 s cold launch | warm pool, ~0.4 s |
+| Revisiting a site with no source | blind, re-explored every time | answered from memory; 44 % less waiting per settle |

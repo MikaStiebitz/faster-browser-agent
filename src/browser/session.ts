@@ -27,6 +27,7 @@ import { NetworkObserver } from '../net/observer.js';
 import { diffSnapshots, preferDiff } from '../runtime/diff.js';
 import { PAGE_RUNTIME_SOURCE, RUNTIME_VERSION } from '../runtime/index.js';
 import { summarize } from '../runtime/serialize.js';
+import type { SiteMemoryStore } from '../site/memory.js';
 import { DEFAULT_SETTLE_OPTIONS } from '../types.js';
 import type {
   FbaConfig,
@@ -36,6 +37,7 @@ import type {
   PageSnapshot,
   Ref,
   SessionInfo,
+  SettleKind,
   SettleOptions,
   SettleResult,
   SnapshotDiff,
@@ -80,6 +82,14 @@ export interface SessionDeps {
   workspaceId: string;
   /** Called exactly once when the page goes away, however it goes away. */
   onClose?: (id: string) => void;
+  /**
+   * Where observations are folded into per-origin memory.
+   *
+   * Optional so the session stays usable standalone, and deliberately a
+   * fire-and-forget sink: learning must never be able to slow down or fail the
+   * operation that produced it.
+   */
+  memory?: SiteMemoryStore;
 }
 
 /** Playwright's `Unboxed<>` does not reduce for an unresolved generic. */
@@ -271,7 +281,10 @@ export class PageSession implements Session {
     // is far more useful kept than dropped.
     if (this.observer && originOf(previousUrl) !== originOf(this.safeUrl())) this.observer.reset();
 
-    if (!options.noSettle) await this.settle();
+    // Sampled as a navigation: a page load is a different beast from a tab
+    // click, and lumping the two into one distribution yields a budget that
+    // fits neither.
+    if (!options.noSettle) await this.settleAs('navigation');
   }
 
   // -------------------------------------------------------------------------
@@ -321,6 +334,19 @@ export class PageSession implements Session {
     }
     this.forceFullNext = false;
     this.diffBaseline = snapshot;
+
+    // Learning happens here because this is the one place a fresh, structured
+    // view of the page already exists. Folding it into per-origin memory costs
+    // no browser work, no navigation and no model call — which is the only way
+    // a learning layer stays switched on by default.
+    this.deps.memory?.recordSnapshot(snapshot);
+    // Endpoints are read from a local array the observer already maintains —
+    // no browser call — so folding them in here is free too. They are what
+    // makes browser_extract able to skip rendering entirely on a later visit.
+    if (this.deps.memory && this.observer) {
+      const origin = originOf(snapshot.url);
+      if (origin) this.deps.memory.recordEndpoints(origin, this.observer.endpoints());
+    }
 
     const summary = summarize(snapshot);
     const observation: Observation = {
@@ -418,10 +444,21 @@ export class PageSession implements Session {
    * as soon as the slower half is satisfied.
    */
   async settle(options?: SettleOptions): Promise<SettleResult> {
+    return this.settleAs('interaction', options);
+  }
+
+  private async settleAs(kind: SettleKind, options?: SettleOptions): Promise<SettleResult> {
     this.touch();
+    // Precedence: explicit caller options > what we have learned this origin
+    // actually needs > configured defaults. The learned layer is the mechanism
+    // by which repeated use of a site gets measurably faster: a site that
+    // reliably goes quiet in 120ms stops being waited on for 300ms, and a slow
+    // one gets a cap that reflects reality instead of a generic guess.
+    const learned = this.deps.memory?.settleBudget(originOf(this.safeUrl()), kind);
     const o: Required<SettleOptions> = {
       ...DEFAULT_SETTLE_OPTIONS,
       ...this.config.settle,
+      ...(learned ?? {}),
       ...options,
     };
     const startedAt = Date.now();
@@ -457,7 +494,12 @@ export class PageSession implements Session {
 
     const waitedMs = Date.now() - startedAt;
     const settled = pageQuiet.settled && networkQuiet;
-    if (settled) return { settled: true, reason: 'quiet', waitedMs };
+    if (settled) {
+      // Only successful settles are sampled. Timeouts measure our own cap, not
+      // the site, and feeding them back would ratchet the budget upward.
+      this.deps.memory?.recordSettle(this.safeUrl(), waitedMs, kind);
+      return { settled: true, reason: 'quiet', waitedMs };
+    }
     if (this.isClosed()) return { settled: false, reason: 'detached', waitedMs };
 
     const pending = this.activeRequests(Date.now());
