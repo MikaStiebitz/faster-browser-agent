@@ -19,8 +19,10 @@ round trips**, not the browser. One call that does ten things beats ten calls.
 3. **Batch every action.** `browser_act` takes a *program*, not one action. Chain the
    whole sequence with `assert` guards and read one result.
 4. **Fill forms in one call.** `browser_form` sets many fields at once, by human label.
-5. **Do not screenshot.** The text snapshot is complete and ~20x cheaper. Only reach for
-   a screenshot when the answer is genuinely visual (canvas, chart rendering, layout bugs).
+5. **Screenshot lazily, never habitually.** The text snapshot is ~20x cheaper. Reach for
+   `browser_screenshot` only when the answer is genuinely visual — and the snapshot tells
+   you when: a canvas-heavy page announces itself with a note. Clip to one element with
+   `target` (~1KB vs ~66KB), then act on pixels with `browser_act` `clickAt {x,y}`.
 6. **Save what you'll repeat.** `browser_skill` replays a known flow with zero model calls.
 7. **Trust the memory.** Every page you look at is remembered per origin — including
    sites with no source code. `browser_find` and `browser_map` answer from it, so a
@@ -135,6 +137,19 @@ cross-talk. Working in a worktree is automatically isolated.
   into a fresh worktree instead of redoing an OAuth dance
 - `browser_session {action: "warm"}` — pre-launch the browser so the first real call
   doesn't pay cold-start
+
+## Network control
+
+`browser_net` bends the network at runtime — no backend changes, no login UIs:
+
+```
+browser_net { action: "mock", pattern: "/api/users", body: {...} }   → develop against a fake API
+browser_net { action: "mock", pattern: "/api/save", status: 500 }    → force the error path
+browser_net { action: "headers", headers: { Authorization: "…" } }   → skip the login flow
+browser_net { action: "requests" }                                   → what did the page just fetch?
+```
+
+Documents are never mocked or blocked, so the page itself always loads.
 
 ## Extracting data
 

@@ -109,7 +109,16 @@ export function createServer(ctx: Partial<ToolContext> = {}): ServerHandle {
       async (args: unknown) => {
         const result = await tool.handler(args);
         return {
-          content: [{ type: 'text' as const, text: result.text }],
+          content: [
+            { type: 'text' as const, text: result.text },
+            // Screenshots ride along as proper MCP image blocks, so the model
+            // sees pixels, not a base64 wall of text.
+            ...(result.images ?? []).map((img) => ({
+              type: 'image' as const,
+              data: img.data,
+              mimeType: img.mimeType,
+            })),
+          ],
           ...(result.isError ? { isError: true } : {}),
         };
       },
@@ -127,7 +136,7 @@ export function createServer(ctx: Partial<ToolContext> = {}): ServerHandle {
 }
 
 /** Tools that never mutate page state — everything else can navigate or click. */
-const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(['browser_snapshot', 'browser_find', 'browser_map']);
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(['browser_snapshot', 'browser_find', 'browser_map', 'browser_screenshot']);
 
 /**
  * Run the server over stdio until the client disconnects.

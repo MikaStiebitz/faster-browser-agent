@@ -20,7 +20,7 @@
 
 import type { ConsoleMessage, Page, Request, Response } from 'playwright-core';
 
-import type { ObservedEndpoint } from '../types.js';
+import type { ObservedEndpoint, RecentRequest } from '../types.js';
 import { FbaError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { normalizeText, plural, truncate } from '../util/text.js';
@@ -263,6 +263,20 @@ interface ProblemEntry {
   count: number;
 }
 
+/**
+ * Wall-clock duration of a finished request, best effort. Playwright's timing
+ * uses -1 for "not available", which must not surface as a negative number.
+ */
+function timingMs(request: Request): number | undefined {
+  try {
+    const timing = request.timing();
+    if (timing.responseEnd >= 0) return Math.round(timing.responseEnd);
+  } catch {
+    /* timing is diagnostics, never worth failing over */
+  }
+  return undefined;
+}
+
 export class NetworkObserver {
   private readonly page: Page;
   private readonly maxEndpoints: number;
@@ -282,6 +296,12 @@ export class NetworkObserver {
    */
   private readonly bodyAttempts = new WeakMap<ObservedEndpoint, number>();
   private problems: ProblemEntry[] = [];
+  /**
+   * Raw last-N request log, separate from the aggregated endpoint table.
+   * Fixed-size ring so a chatty page cannot grow memory; 50 entries is enough
+   * to answer "what did the page just fetch?" without becoming a HAR file.
+   */
+  private recentLog: RecentRequest[] = [];
   private dropped = 0;
   private pending = 0;
   private attached = false;
@@ -313,6 +333,16 @@ export class NetworkObserver {
     } catch {
       // The page was already closed; its listeners died with it.
     }
+  }
+
+  private pushRecent(entry: RecentRequest): void {
+    this.recentLog.push(entry);
+    if (this.recentLog.length > 50) this.recentLog.shift();
+  }
+
+  /** The raw last-N requests, newest first. */
+  recent(limit = 20): RecentRequest[] {
+    return [...this.recentLog].reverse().slice(0, Math.max(1, limit));
   }
 
   /** Observed endpoints, most useful first (most hits, then most recent). */
@@ -357,6 +387,14 @@ export class NetworkObserver {
   private readonly onResponse = (response: Response): void => {
     try {
       const request = response.request();
+      this.pushRecent({
+        method: request.method(),
+        url: request.url(),
+        resourceType: request.resourceType(),
+        status: response.status(),
+        ms: timingMs(request),
+        startedAt: Date.now(),
+      });
       // A navigation is not an API call; the document body is not data.
       if (request.isNavigationRequest()) return;
 
@@ -395,6 +433,13 @@ export class NetworkObserver {
   private readonly onRequestFailed = (request: Request): void => {
     try {
       const errorText = request.failure()?.errorText ?? 'unknown error';
+      this.pushRecent({
+        method: request.method(),
+        url: request.url(),
+        resourceType: request.resourceType(),
+        failure: errorText,
+        startedAt: Date.now(),
+      });
       if (IGNORED_FAILURES.has(errorText)) return;
       if (STATIC_TYPES.has(request.resourceType()) && !request.isNavigationRequest()) return;
       this.pushProblem(`request failed: ${request.method()} ${this.shortUrl(request.url())} — ${errorText}`);

@@ -409,7 +409,20 @@ export type ActionStep =
   | { do: 'dialog'; accept: boolean; promptText?: string }
   | { do: 'selectTab'; path: string[] }
   | { do: 'expand'; target: Target }
-  | { do: 'eval'; fn: string; args?: unknown[] };
+  | { do: 'eval'; fn: string; args?: unknown[] }
+  /**
+   * Coordinate click — the escape hatch for canvas/WebGL surfaces where no DOM
+   * target exists. Coordinates are CSS pixels relative to the viewport, i.e.
+   * exactly the coordinate space of a `browser_screenshot` image.
+   */
+  | { do: 'clickAt'; x: number; y: number; button?: 'left' | 'right' | 'middle'; clickCount?: number }
+  | { do: 'drag'; target: Target; to: Target }
+  | { do: 'resize'; width: number; height: number }
+  /**
+   * Click something that triggers a file download and wait for the file.
+   * The step's detail reports the saved path.
+   */
+  | { do: 'download'; target: Target; timeoutMs?: number };
 
 export type Modifier = 'Alt' | 'Control' | 'Meta' | 'Shift';
 
@@ -793,6 +806,24 @@ export interface ObservedEndpoint {
   responseShape?: string;
   requestBodyShape?: string;
   lastSeenAt: number;
+}
+
+/**
+ * One entry of the recent-request ring buffer.
+ *
+ * Distinct from `ObservedEndpoint`: endpoints are the aggregated, deduplicated
+ * table used for API shortcutting, while this is the raw last-N log an agent
+ * asks for when debugging ("what did the page actually fetch just now?").
+ */
+export interface RecentRequest {
+  method: string;
+  url: string;
+  resourceType: string;
+  status?: number;
+  /** Set when the request failed at the network level. */
+  failure?: string;
+  ms?: number;
+  startedAt: number;
 }
 
 // ---------------------------------------------------------------------------

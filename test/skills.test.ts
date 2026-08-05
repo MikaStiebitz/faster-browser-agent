@@ -440,6 +440,7 @@ function fakeSession(url: string): Session {
     pendingDialog: () => undefined,
     answerDialog: async () => undefined,
     endpoints: () => [],
+    recentRequests: () => [],
     drainProblems: async () => [],
     ensureRuntime: async () => undefined,
     close: async () => undefined,

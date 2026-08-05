@@ -35,6 +35,7 @@ import type {
   Observation,
   ObservedEndpoint,
   PageSnapshot,
+  RecentRequest,
   Ref,
   SessionInfo,
   SettleKind,
@@ -564,6 +565,10 @@ export class PageSession implements Session {
 
   endpoints(): ObservedEndpoint[] {
     return this.observer?.endpoints() ?? [];
+  }
+
+  recentRequests(limit?: number): RecentRequest[] {
+    return this.observer?.recent(limit) ?? [];
   }
 
   /**

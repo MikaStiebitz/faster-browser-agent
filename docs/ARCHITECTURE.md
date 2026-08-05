@@ -25,7 +25,7 @@ it turns exploration into a lookup.
 ## Layers
 
 ```
-L4  MCP surface        9 coarse tools, compact structured results
+L4  MCP surface        11 coarse tools, compact structured results
 L3  Knowledge          code index (from source) + site memory (from browsing) + skill cache
 L2  Executor           guarded action programs, self-healing resolution, bulk form fill
 L1  Page runtime       one injected script: one-eval snapshot, settle detection, find()
@@ -223,8 +223,23 @@ and re-records. Recurring flows go from minutes to seconds.
 ## L4 — MCP surface
 
 Tool definitions occupy the model's context on *every* call, so the surface is itself a
-latency cost. Nine coarse tools, short descriptions, tight schemas — no fine-grained
+latency cost. Eleven coarse tools, short descriptions, tight schemas — no fine-grained
 `click`/`type`/`press` tools, because those are steps inside `browser_act`.
+
+**Smart-lazy vision.** `browser_screenshot` exists but is an escape hatch, not a habit:
+every default minimizes cost (JPEG q60, viewport clip, animations disabled, full-page
+height-capped at 4000px; an element clip is ~1KB), and the trigger is inverted — the
+*snapshot* detects canvas-heavy viewports and notes "browser_screenshot + clickAt {x,y}
+is the way in", so vision is suggested exactly when text perception fails and never
+otherwise. Image coordinates map 1:1 onto the `clickAt` step.
+
+**Runtime network control.** `browser_net` exposes the agent-shaped half of Playwright's
+network API — mock an endpoint (develop against an API that does not exist yet, force a
+500), block a pattern, inject auth headers instead of driving a login UI, go offline,
+list recent traffic. One catch-all route consulting rule tables keeps add/remove
+trivially correct; documents are never mocked or blocked, so the page itself always
+loads. HAR replay, websocket routing and video/trace recording are deliberately out of
+scope — test-suite machinery whose schemas would tax every model turn.
 
 Results are compact indented text rather than JSON (braces and quotes are pure overhead) and
 default to a **diff**:

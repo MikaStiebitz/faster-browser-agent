@@ -156,6 +156,7 @@ function makeSession(spec: FakeSessionSpec = {}): { session: Session; calls: Fak
     pendingDialog: () => undefined,
     answerDialog: async () => undefined,
     endpoints: () => [],
+    recentRequests: () => [],
     drainProblems: async () => [],
     ensureRuntime: async () => {
       calls.ensureRuntime += 1;
