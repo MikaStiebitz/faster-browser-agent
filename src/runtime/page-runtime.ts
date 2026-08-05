@@ -1626,6 +1626,33 @@ function installFbaRuntime(): void {
       if (frameCount > 0) {
         push(notes, frameCount + ' iframe' + (frameCount === 1 ? '' : 's') + ' not traversed');
       }
+
+      // Visual-surface detection: when most of the viewport is canvas/WebGL
+      // and there is barely anything interactive to report, the text snapshot
+      // is honestly blind — say so, and name the escape hatch, instead of
+      // handing back a near-empty tree that reads like an empty page. This is
+      // the trigger that makes screenshots "smart": they are suggested exactly
+      // when text perception fails, and never otherwise.
+      if (interactiveCount < 8) {
+        const canvases = qsa(doc, 'canvas', 8);
+        let canvasArea = 0;
+        const vp = viewportSize();
+        for (let i = 0; i < canvases.length; i += 1) {
+          const c = canvases[i];
+          if (!c || !isVisible(c)) continue;
+          const rect = rectOf(c);
+          if (!rect) continue;
+          const w = Math.min(rect.right, vp.w) - Math.max(rect.left, 0);
+          const h = Math.min(rect.bottom, vp.h) - Math.max(rect.top, 0);
+          if (w > 0 && h > 0) canvasArea += w * h;
+        }
+        if (canvasArea > vp.w * vp.h * 0.4) {
+          push(
+            notes,
+            'canvas-heavy page — the text snapshot cannot see into it; browser_screenshot + clickAt {x,y} is the way in',
+          );
+        }
+      }
     } catch {
       /* notes are optional */
     }

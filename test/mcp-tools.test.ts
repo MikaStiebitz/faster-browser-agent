@@ -112,6 +112,7 @@ function fakeSession(config: FbaConfig, id = 's1'): Session {
     }),
     pendingDialog: () => undefined,
     answerDialog: async () => undefined,
+    recentRequests: () => [],
     endpoints: () => [
       {
         method: 'GET',
@@ -254,7 +255,7 @@ function tool(name: string): ToolDefinition {
 // ---------------------------------------------------------------------------
 
 describe('tool surface', () => {
-  it('registers exactly the nine expected tools', () => {
+  it('registers exactly the eleven expected tools', () => {
     expect([...tools.keys()]).toEqual([...TOOL_NAMES]);
   });
 

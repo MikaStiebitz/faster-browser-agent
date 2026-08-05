@@ -5,8 +5,8 @@
  *
  *  1. **Tool definitions are resident context.** Their names, descriptions and
  *     JSON schemas are re-sent to the model on every single turn, so the tool
- *     surface is itself a latency and token cost. That is why there are nine
- *     coarse tools instead of thirty fine-grained ones: `click`, `type` and
+ *     surface is itself a latency and token cost. That is why there are eleven
+ *     coarse tools instead of forty fine-grained ones: `click`, `type` and
  *     `press` are *steps inside* `browser_act`, not tools, and roles are typed
  *     as free strings rather than a forty-member enum that would be re-encoded
  *     into every request.
@@ -37,6 +37,9 @@ import type {
   SkillRunner,
   SkillStore,
 } from '../contracts.js';
+import { capture, describeCapture } from '../browser/capture.js';
+import { targetResolver } from '../executor/resolve.js';
+import { NetControl } from '../net/control.js';
 import { replayEndpoint } from '../net/observer.js';
 import { serializeObservation } from '../runtime/serialize.js';
 import { originOf as originOfUrl } from '../site/digest.js';
@@ -84,11 +87,17 @@ export interface ToolContext {
   memory?: SiteMemoryStore;
 }
 
+/** An inline image attached to a tool result (MCP image content block). */
+export interface ToolImage {
+  data: string; // base64
+  mimeType: string;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
   schema: z.ZodTypeAny;
-  handler(args: unknown): Promise<{ text: string; isError?: boolean }>;
+  handler(args: unknown): Promise<{ text: string; isError?: boolean; images?: ToolImage[] }>;
 }
 
 /** Canonical tool names, in registration order. */
@@ -102,6 +111,8 @@ export const TOOL_NAMES = [
   'browser_extract',
   'browser_skill',
   'browser_session',
+  'browser_screenshot',
+  'browser_net',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -208,9 +219,45 @@ const stepSchema = z.discriminatedUnion('do', [
   z.object({ do: z.literal('selectTab'), path: z.array(z.string()).min(1) }),
   z.object({ do: z.literal('expand'), target: targetSchema }),
   z.object({ do: z.literal('eval'), fn: z.string(), args: z.array(z.unknown()).optional() }),
+  z.object({
+    do: z.literal('clickAt'),
+    x: z.number(),
+    y: z.number(),
+    button: z.enum(['left', 'right', 'middle']).optional(),
+    clickCount: z.number().int().positive().optional(),
+  }),
+  z.object({ do: z.literal('drag'), target: targetSchema, to: targetSchema }),
+  z.object({ do: z.literal('resize'), width: z.number().int().positive(), height: z.number().int().positive() }),
+  z.object({ do: z.literal('download'), target: targetSchema, timeoutMs: z.number().int().positive().optional() }),
 ]);
 
 const fieldValueSchema = z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]);
+
+const screenshotArgs = z
+  .object({
+    sessionId,
+    workspace: workspaceArg,
+    target: targetSchema.optional().describe('clip to one element — far cheaper than a viewport shot'),
+    fullPage: z.boolean().optional().describe('whole document, height-capped at 4000px'),
+    format: z.enum(['jpeg', 'png']).optional().describe('jpeg (default, small) or png (lossless)'),
+    quality: z.number().int().min(1).max(100).optional().describe('jpeg quality, default 60'),
+  })
+  .describe('EXPENSIVE relative to browser_snapshot — use only for genuinely visual questions');
+
+const netArgs = z.object({
+  action: z
+    .enum(['requests', 'mock', 'unmock', 'block', 'allow', 'headers', 'offline', 'online', 'clear', 'status'])
+    .describe('requests: recent traffic | mock/unmock: fake an endpoint | block/allow: kill requests | headers: extra HTTP headers | offline/online | clear | status'),
+  sessionId,
+  workspace: workspaceArg,
+  pattern: z.string().optional().describe('substring or *-glob matched against the url'),
+  method: z.string().optional(),
+  status: z.number().int().optional().describe('mock response status, default 200'),
+  body: z.unknown().optional().describe('mock response body (object -> json)'),
+  contentType: z.string().optional(),
+  headers: z.record(z.string()).optional().describe('extra HTTP headers; empty string value removes one'),
+  limit: z.number().int().positive().optional(),
+});
 
 const scopeSchema = z.enum(['viewport', 'page', 'region']).optional();
 
@@ -508,7 +555,7 @@ function compactJson(value: unknown, max: number): string {
 // Tool construction
 // ---------------------------------------------------------------------------
 
-type Handler<S extends z.ZodTypeAny> = (args: z.output<S>) => Promise<string | { text: string; isError?: boolean }>;
+type Handler<S extends z.ZodTypeAny> = (args: z.output<S>) => Promise<string | { text: string; isError?: boolean; images?: ToolImage[] }>;
 
 function define<S extends z.ZodTypeAny>(
   name: string,
@@ -520,7 +567,7 @@ function define<S extends z.ZodTypeAny>(
     name,
     description,
     schema,
-    async handler(raw: unknown): Promise<{ text: string; isError?: boolean }> {
+    async handler(raw: unknown): Promise<{ text: string; isError?: boolean; images?: ToolImage[] }> {
       const parsed = schema.safeParse(raw ?? {});
       if (!parsed.success) {
         const issues = parsed.error.issues
@@ -554,6 +601,8 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
   // Created lazily-but-once: it only touches the filesystem when a
   // browser_session call actually asks about profiles.
   const profiles: ProfileManager = new FsProfileManager(ctx.config);
+  // Per-session network rules; entries for closed sessions are dropped lazily.
+  const netControls = new Map<string, NetControl>();
 
   return [
     define(
@@ -761,7 +810,132 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
       sessionArgs,
       async (args) => sessionText(ctx, profiles, args),
     ),
+
+    define(
+      'browser_screenshot',
+      'Screenshot — ONLY when text perception fails (canvas/WebGL, images, layout). ~20x costlier than browser_snapshot; prefer target to clip one element. Image coordinates work with clickAt {x,y}.',
+      screenshotArgs,
+      async (args) => {
+        const session = await sessionFor(ctx, args);
+        let locator;
+        if (args.target) {
+          const resolved = await targetResolver.resolve(session, args.target as Target);
+          locator = resolved.locator;
+        }
+        const shot = await capture(session.page, {
+          ...(locator ? { locator } : {}),
+          ...(args.fullPage ? { fullPage: true } : {}),
+          ...(args.format ? { format: args.format } : {}),
+          ...(args.quality !== undefined ? { quality: args.quality } : {}),
+        });
+        return {
+          text: `session: ${session.id}\n${describeCapture(shot)}`,
+          images: [{ data: shot.data, mimeType: shot.mimeType }],
+        };
+      },
+    ),
+
+    define(
+      'browser_net',
+      'Network control: requests | mock | unmock | block | allow | headers | offline | online | clear | status. Mock an API or force error states; inject auth headers instead of driving a login UI.',
+      netArgs,
+      async (args) => netText(ctx, netControls, args),
+    ),
   ];
+}
+
+// ---------------------------------------------------------------------------
+// browser_net
+// ---------------------------------------------------------------------------
+
+/**
+ * One NetControl per live session, created lazily.
+ *
+ * Keyed by session id and probed via ctx.pool so entries for closed sessions
+ * are dropped on the next touch — no timer, no leak.
+ */
+function netFor(netControls: Map<string, NetControl>, session: Session): NetControl {
+  let control = netControls.get(session.id);
+  if (!control) {
+    control = new NetControl(session.page);
+    netControls.set(session.id, control);
+  }
+  return control;
+}
+
+async function netText(
+  ctx: ToolContext,
+  netControls: Map<string, NetControl>,
+  args: z.output<typeof netArgs>,
+): Promise<string> {
+  const session = await sessionFor(ctx, args);
+  // Drop controls whose sessions are gone before possibly adding a new one.
+  for (const id of [...netControls.keys()]) {
+    if (!ctx.pool.get(id)) netControls.delete(id);
+  }
+  const control = netFor(netControls, session);
+
+  switch (args.action) {
+    case 'requests': {
+      const recent = session.recentRequests(args.limit ?? 20);
+      if (recent.length === 0) return 'no requests recorded yet — navigate or interact first';
+      const lines = recent.map((r) => {
+        const outcome = r.failure ? `FAILED ${r.failure}` : String(r.status ?? '?');
+        const timing = r.ms !== undefined ? ` ${r.ms}ms` : '';
+        return `${r.method.padEnd(6)} ${outcome.padEnd(6)}${timing}  ${truncate(r.url, 100)}  [${r.resourceType}]`;
+      });
+      return `recent requests (${recent.length}, newest first):\n${lines.join('\n')}`;
+    }
+
+    case 'mock': {
+      if (!args.pattern) throw new FbaError('INVALID_ARGUMENT', 'mock needs a url pattern');
+      const rule = await control.mock({
+        pattern: args.pattern,
+        ...(args.method ? { method: args.method } : {}),
+        ...(args.status !== undefined ? { status: args.status } : {}),
+        ...(args.body !== undefined ? { body: args.body } : {}),
+        ...(args.contentType ? { contentType: args.contentType } : {}),
+      });
+      return `mocking ${rule.method ?? 'ANY'} ${rule.pattern} -> ${rule.status} ${rule.contentType} (documents are never mocked)`;
+    }
+
+    case 'unmock':
+      return `removed ${control.unmock(args.pattern)} mock(s)`;
+
+    case 'block': {
+      if (!args.pattern) throw new FbaError('INVALID_ARGUMENT', 'block needs a url pattern');
+      await control.block(args.pattern);
+      return `blocking requests matching "${args.pattern}" (documents are never blocked)`;
+    }
+
+    case 'allow':
+      return `removed ${control.allow(args.pattern)} block rule(s)`;
+
+    case 'headers': {
+      if (!args.headers || Object.keys(args.headers).length === 0) {
+        throw new FbaError('INVALID_ARGUMENT', 'headers needs a {headers} object', {
+          hint: 'an empty string value removes that header',
+        });
+      }
+      await control.setHeaders(args.headers);
+      return `extra headers now: ${Object.keys(args.headers).join(', ')} — applies to all requests from this tab`;
+    }
+
+    case 'offline':
+      await control.setOffline(true);
+      return 'network is now OFFLINE for this workspace context — browser_net {action:"online"} restores it';
+
+    case 'online':
+      await control.setOffline(false);
+      return 'network restored';
+
+    case 'clear':
+      await control.clear();
+      return 'all network rules cleared';
+
+    case 'status':
+      return control.describe().join('\n');
+  }
 }
 
 // ---------------------------------------------------------------------------

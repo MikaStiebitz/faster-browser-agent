@@ -21,6 +21,7 @@ import type {
   NativeDialogInfo,
   Observation,
   ObservedEndpoint,
+  RecentRequest,
   PageSnapshot,
   ProfileHandle,
   Ref,
@@ -181,6 +182,9 @@ export interface Session {
 
   /** JSON-ish endpoints the page called during this session. */
   endpoints(): ObservedEndpoint[];
+
+  /** Raw last-N request log, newest first. Empty when observation is off. */
+  recentRequests(limit?: number): RecentRequest[];
 
   /** Console errors / failed requests since the last observation. */
   drainProblems(): Promise<string[]>;

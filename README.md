@@ -1,92 +1,65 @@
-# faster-browser-agent
+<div align="center">
 
-**A browser driver built for AI agents, not for test scripts.**
+# ⚡ faster-browser-agent
 
-Generic Playwright MCP servers are slow for reasons that have little to do with the
-browser. They make one model call per click, hand the model tens of thousands of tokens of
-accessibility tree per step, and discover an application by clicking around it — even when
-the application's source code, with its route table and tab definitions, is sitting right
-there in the workspace.
+**The browser driver built for AI agents — not for test scripts.**
 
-This does the opposite. It reads your code first, deep-links instead of navigating,
-executes guarded action *programs* instead of single actions, compresses what the model
-sees by ~20x, and replays known flows with zero model calls. Every git workspace gets its
-own browser identity, so parallel agents never share a cookie jar.
+It reads your code before it opens a page, learns every site it visits,
+executes whole action programs in one call, and gives every git worktree
+its own browser identity.
 
-```
-npx faster-browser-agent doctor     # check the install
-npx faster-browser-agent mcp        # start the MCP server
-```
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A520.10-339933?logo=node.js&logoColor=white)](package.json)
+[![Tests](https://img.shields.io/badge/tests-295%20passing-brightgreen)](test/)
+[![MCP](https://img.shields.io/badge/MCP-11%20coarse%20tools-8b5cf6)](src/mcp/tools.ts)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
----
+[Quick start](#-quick-start) •
+[Why it's fast](#-why-its-fast) •
+[Tools](#-the-eleven-tools) •
+[Features](#-what-makes-it-different) •
+[Architecture](#-architecture) •
+[CLI](#-cli)
 
-## Why it's faster
-
-Measured on this machine against `test/fixtures/config-app.html`, a settings page with
-nested tabs, collapsed accordions, a 40-row table and a modal:
-
-| What the model receives | Size |
-| --- | --- |
-| Raw DOM (`page.content()`) | 16,061 chars (~4,000 tokens) |
-| Raw accessibility tree (JSON) | 31,933 chars (~8,000 tokens) |
-| **This, whole page** | **1,438 chars (~360 tokens)** |
-| **This, viewport (default)** | **1,359 chars (~340 tokens)** |
-
-That is **22x smaller than the accessibility tree**, on a page far simpler than a real
-admin panel. And the reduction compounds: it applies to *every* step of *every* flow.
-
-Browser-side timings (`fba bench`, medians):
-
-| Phase | |
-| --- | --- |
-| cold launch | 316 ms (8.2 s on a genuinely cold container) |
-| warm acquire (new tab) | 87 ms |
-| navigate | 48 ms |
-| settle (DOM + network quiet) | 316 ms |
-| snapshot, 97 interactive elements | 13 ms |
-| serialize | 0.2 ms |
-
-But the browser was never the bottleneck. This is:
-
-| Task | Generic driver | Here |
-| --- | --- | --- |
-| Reach a 3rd-level config tab | 3 navigations, 3 snapshots, 3 model calls | 1 deep link, 1 snapshot, **1 model call** |
-| Fill a 30-field settings form | ~30 model calls | **1 call** (`browser_form`) |
-| Repeat a flow you already ran | full model-driven run | **0 model calls** (skill replay, 675 ms measured) |
-| Wait after an action | fixed 2 s sleeps | settle heuristic, typically 300–500 ms |
-| Revisit a site you've seen before | starts blind again | answers from memory; **44 % less waiting per settle** |
+</div>
 
 ---
 
-## Install
+## The problem
 
-Requires Node ≥ 20.10 and a Chromium. If you already have Playwright installed, its browser
-is found automatically; otherwise point `FBA_CHROMIUM_PATH` at any Chrome/Chromium.
+Generic browser MCP servers are slow for reasons that have little to do with the browser:
+
+- **One model call per click.** A 25-step flow costs 25 rounds of inference — 70–90 % of wall-clock time.
+- **Token-wall perception.** A raw accessibility tree of a settings page is ~8,000 tokens, re-sent every step.
+- **Blindness.** They discover your app by clicking around it — while its route table, tab definitions and config schema sit right there in your workspace.
+- **Amnesia.** Every visit to every site starts from zero.
+
+This project attacks all four, in that order.
+
+## 🚀 Quick start
 
 ```bash
-npm install -g faster-browser-agent
-fba doctor
+npm install -g faster-browser-agent   # or run from a clone: npm i && npm run build && npm link
+fba doctor                            # verifies chromium, workspace detection, index
 ```
-
-### As an MCP server
 
 <details open>
-<summary>Claude Code</summary>
+<summary><b>Claude Code</b></summary>
 
 ```bash
-claude mcp add browser -- npx -y faster-browser-agent mcp
+claude mcp add browser -- fba mcp
 ```
 </details>
 
 <details>
-<summary>Any MCP host (<code>.mcp.json</code>)</summary>
+<summary><b>Any MCP host</b> (<code>.mcp.json</code>)</summary>
 
 ```json
 {
   "mcpServers": {
     "browser": {
-      "command": "npx",
-      "args": ["-y", "faster-browser-agent", "mcp"],
+      "command": "fba",
+      "args": ["mcp"],
       "env": { "FBA_WORKSPACE": "/path/to/your/project" }
     }
   }
@@ -94,96 +67,97 @@ claude mcp add browser -- npx -y faster-browser-agent mcp
 ```
 </details>
 
-### As a Claude Code plugin
+<details>
+<summary><b>As a Claude Code plugin</b> (MCP server + power-user skill)</summary>
 
-The repository is also a plugin: it ships the MCP server plus a `browser-power-user` skill
-that teaches the agent the efficient usage patterns (batch actions, deep-link, don't
-screenshot). Add the marketplace and install it, or copy `skills/browser-power-user/` into
-your own `.claude/skills/`.
+The repository is itself a plugin — it ships the server plus a
+`browser-power-user` skill that teaches the agent the efficient patterns
+(batch actions, deep-link, screenshot only when text fails).
 
----
+```bash
+claude plugin install /path/to/faster-browser-agent
+```
+</details>
 
-## The nine tools
+## 📊 Why it's fast
 
-Tool definitions sit in the model's context on *every* call, so the surface is itself a
-latency cost. Nine coarse tools, not twenty fine-grained ones. There is deliberately no
-`click` or `type` tool — those are steps inside `browser_act`.
+All numbers measured on this codebase's fixture — a settings page with nested
+tabs, collapsed accordions, a 40-row table and a modal. Reproduce with
+`fba bench` and `npm test`.
+
+**Perception cost per observation:**
+
+| What the model receives | Size |
+|---|---|
+| Raw DOM (`page.content()`) | 16,061 chars · ~4,000 tokens |
+| Raw accessibility tree | 31,933 chars · ~8,000 tokens |
+| **fba, full page** | **1,438 chars · ~360 tokens** |
+| **fba, after one click (diff)** | **~596 chars · ~149 tokens** |
+
+**Round trips per task:**
+
+| Task | Generic driver | fba |
+|---|---|---|
+| Reach a 3rd-level config tab | 3 navigations · 3 model calls | 1 deep link · **1 call** |
+| Fill a 30-field settings form | ~30 model calls | **1 call** |
+| Repeat a known flow | full model-driven run | **0 model calls** · 675 ms |
+| Revisit a site | starts blind | answers from memory · 44 % less waiting |
+| Wait after an action | fixed 2 s sleeps | learned settle · 128–316 ms |
+
+**Browser-side medians** (`fba bench`): warm tab 87 ms · navigate 48 ms ·
+snapshot of 97 controls 13 ms · element screenshot 1 KB.
+
+## 🧰 The eleven tools
+
+Tool definitions are resident context on every model turn, so the surface is
+itself a latency cost. Eleven coarse tools — `click`, `type`, `press` are
+*steps inside* `browser_act`, not tools.
 
 | Tool | What it does |
-| --- | --- |
-| `browser_open` | Open a URL, **or a route resolved from your source code** |
-| `browser_snapshot` | Observe — a diff by default, full tree on request |
-| `browser_act` | Run a guarded action **program**: many steps, one call |
-| `browser_form` | Fill many fields at once, by human label |
-| `browser_find` | Locate by meaning across the live page, the code index *and* what past visits taught |
-| `browser_map` | The app's route/tab/config map — from source, from memory, or both |
+|---|---|
+| `browser_open` | Open a URL **or a route resolved from your source code** |
+| `browser_snapshot` | Observe — a compact diff by default, full tree on request |
+| `browser_act` | Run a guarded **program**: 27 step types, one call, stops on divergence |
+| `browser_form` | Fill many fields by human label; tab switch + submit + verify included |
+| `browser_find` | Locate by meaning across live page + code index + learned memory |
+| `browser_map` | The app map — from source, from memory, or both |
 | `browser_extract` | Structured extraction, or replay an API the page itself called |
-| `browser_skill` | Save and replay compiled trajectories (zero model calls) |
-| `browser_session` | Per-workspace browser state: list, warm, reset, seed |
+| `browser_skill` | Compile & replay trajectories — **zero model calls** |
+| `browser_session` | Per-workspace state: list, warm, reset, seed logins across worktrees |
+| `browser_screenshot` | 📸 Smart-lazy vision — see below |
+| `browser_net` | Mock, block, inject headers, go offline — at runtime |
 
----
+## ✨ What makes it different
 
-## What makes it different
+### 1 · Code-aware navigation
 
-### 1. It reads your code before it opens the page
-
-The workspace is scanned via `git ls-files` and mined for routes (Next.js app + pages,
-SvelteKit, Nuxt, Astro, Remix, React Router, Vue Router, Angular, Django, Rails,
-Flask/FastAPI), `data-testid`/`aria-label` literals, declarative tab arrays, zod/JSON-Schema
-config fields, and i18n catalogues. The dev-server port is inferred from your `dev` script,
-vite/next config or `.env`.
+The workspace is indexed in milliseconds (routes across 12 frameworks,
+`data-testid`s, declarative tab arrays, zod/JSON-Schema config fields, i18n
+catalogues, the dev-server port from your scripts):
 
 ```console
-$ fba index
-  frameworks     next-app
-  base url       http://localhost:4321
-  routes         4
-  nav groups     1
-  config fields  4
-  build          19.0ms
-
 $ fba map advanced
-score  kind   label                    url / target                             source
- 1.00  route  Advanced                 http://localhost:4321/settings/advanced  src/app/settings/advanced/page.tsx:1
- 0.97  nav    Settings Tabs: Advanced  http://localhost:4321/settings/advanced  src/components/Tabs.tsx:2
+score  kind   label     url                                       source
+ 1.00  route  Advanced  http://localhost:4321/settings/advanced   src/app/settings/advanced/page.tsx:1
 ```
 
-So `browser_open {route: "settings/advanced"}` is a **deep link**, not three clicks. And
-`browser_find {query: "SMTP port"}` answers from the schema — with the source location —
-before touching the browser.
+`browser_open {route: "settings/advanced"}` is a **deep link** — not three clicks.
 
-### 2. Perception is compressed, not dumped
+### 2 · Compressed perception, then diffs
 
-One injected script returns the whole observation in a single round trip. Four compressions
-do the work: viewport-first scoping, modal scoping (a dialog hides the page behind it),
-collapsed containers emitted as one line with a child count, and repeat-pattern folding.
+One injected script returns the whole observation in a single round trip.
+Viewport scoping, modal scoping, collapsed sections as one line, repeated rows
+folded (`… +37 similar`). After the first look, you get diffs:
 
-```
-url: /  |  title: Acme Admin — Settings
-tab: General
-  e13 tablist "Settings sections"
-    e14 tab "General" [selected]
-    e15 tab "Network"
-  e17 panel "General"
-    e19 text "Organisation name" = "Acme Inc"
-    e21 select "Default locale" = English (English|Deutsch|Français)
-    e23 check "Email notifications" [checked]
-  e26 table
-    e28 row … +37 similar
-[43 interactive, 45 shown, 99 elided, 7.7ms]
-```
-
-After the first look you get diffs, not trees:
-
-```
+```diff
 @ tab Settings > General -> Settings > Advanced
-~ e12 text "SMTP host" "" -> "smtp.acme.io"
+~ e12 text "SMTP host"  "" -> "smtp.acme.io"
 ~ e34 status "Saving…" -> "Saved"
 ```
 
-### 3. Action programs, not one call per click
+### 3 · Action programs, not single actions
 
-```json
+```jsonc
 {"steps": [
   {"do": "selectTab", "path": ["Network", "SMTP"]},
   {"do": "type",   "target": {"label": "SMTP host"}, "text": "smtp.acme.io", "clear": true},
@@ -193,187 +167,153 @@ After the first look you get diffs, not trees:
 ]}
 ```
 
-Executed deterministically; control returns to the model only on divergence. Targets are
-self-healing — a stale `ref` falls through to `testId`, `role+name`, `label`, `text`, and
-the step still runs. Ambiguity is never guessed: the error lists the candidates.
+Executed deterministically; control returns to the model only on divergence.
+Targets **self-heal** — a stale ref falls through testId → role+name → label →
+text and the step still runs. Ambiguity is never guessed: the error lists the
+candidates. 27 step types including `selectTab`, `expand`, `drag`, `resize`,
+`download`, `clickAt`, `eval`.
 
-For configuration screens, `browser_form` is even denser — one call switched two tab levels,
-filled four fields, submitted and verified:
+### 4 · Smart-lazy screenshots 📸
 
+Text perception is ~20× cheaper, so screenshots are an **escape hatch, not a
+habit** — and the system tells the agent exactly when to reach for one:
+
+- Canvas/WebGL-heavy pages **announce themselves** in the snapshot:
+  `canvas-heavy page — browser_screenshot + clickAt {x,y} is the way in`
+- Every default minimizes cost: JPEG q60, viewport clip, animations disabled,
+  full-page height-capped. An **element clip is ~1 KB**; a viewport ~66 KB.
+- Image coordinates map 1:1 to `clickAt {x, y}` — see it, click it.
+
+### 5 · Runtime network control
+
+```jsonc
+browser_net {"action": "mock", "pattern": "/api/users", "body": {"users": []}}   // develop against APIs that don't exist yet
+browser_net {"action": "mock", "pattern": "/api/save", "status": 500}            // force the error path
+browser_net {"action": "headers", "headers": {"Authorization": "Bearer …"}}      // skip the login UI entirely
+browser_net {"action": "requests"}                                               // what did the page just fetch?
 ```
-SMTP host: ok -> "SMTP host" e41
-SMTP port: ok -> "SMTP port" e42
-Encryption: ok -> "Encryption" e45
-submitted
-4 filled, submitted — tab Network > SMTP
-~ e34 status "Saving…" -> "Saved"
-```
 
-### 4. Flows you repeat cost nothing
+Documents are never mocked or blocked — the page itself always loads.
 
-```
-browser_act   { steps: [...], record: "configure-smtp" }
-browser_skill { action: "replay", name: "configure-smtp", params: { host: "smtp.acme.io" } }
-```
+### 6 · It learns every site it visits
 
-Replay is pure execution — **zero model calls**, 675 ms measured. Every `assert` recorded
-with the skill doubles as a verifier, so a changed UI fails fast and honestly instead of
-half-executing.
-
-### 5. It learns every site it visits — source code or not
-
-The code index only covers applications whose source is in your workspace. For
-everything else — a vendor admin panel, a SaaS dashboard, someone else's app —
-site memory does the same job, built from browsing rather than from reading.
-
-It is written as a **side effect of ordinary observation**: no extra calls, no
-extra navigations, no model involvement. Every snapshot the agent was going to
-take anyway is folded into a per-origin record of
-
-- **pages**, with volatile segments generalised (`/users/17` and `/users/24`
-  become `/users/:id`) and the tab structures seen on each,
-- **controls**, each tagged with the page *and tab path* it lives under,
-- **navigation edges** — "activating *Settings* on `/` leads to `/settings`",
-- **API endpoints** the page called,
-- **settle timings**, split into navigation and interaction.
-
-The payoff on the second visit, from a fresh process:
+The code index needs your source. For everything else — a vendor admin panel,
+a SaaS dashboard — **site memory** builds the map as a side effect of ordinary
+browsing: pages (URLs generalised, `/users/17` → `/users/:id`), controls with
+the *tab path they live under*, navigation edges, API endpoints, settle
+timings. Zero extra calls.
 
 ```console
-$ # first visit — nothing known
-$ browser_find { query: "smtp port" }
-page (6):
-  e35 spinbutton "SMTP port" (1.00) — needs selectTab ["Network","SMTP"]
-
-$ # second visit, new process — answered from memory
+$ # second visit, fresh process:
 learned (4):
   spinbutton "SMTP port" (1.00) — at http://acme.test/settings,
       tab Network > SMTP [data-testid=smtp-port] — seen 4x
 ```
 
-And `browser_map` now produces a map of a site it has no source for at all.
+The wait budget adapts per origin — measured 228 ms → 128 ms median settle
+(navigation and interaction distributions kept separate, silent below 5
+samples). Inspect with `fba sites list|show|forget`.
 
-**The wait budget adapts too.** Measured on the fixture, same workload each time,
-the only variable being where the settle windows come from:
+### 7 · Compiled trajectories
 
-| | median settle |
-| --- | --- |
-| memory off (generic 300 ms / 200 ms default) | 228 ms |
-| memory on, learning during the run | 128 ms (switches at the 6th sample) |
-| memory on, primed | **128 ms — 44 % less waiting** |
-
-Navigation and interaction settles are kept in **separate** distributions on
-purpose. A page load and a tab click are not the same event, and a budget
-derived from both at once is simultaneously too loose for the fast one and too
-tight for the slow one — worse than the generic default it replaces.
-
-Inspect and manage it:
-
-```bash
-fba sites list
-fba sites show http://acme.test
-fba sites forget http://acme.test
+```jsonc
+browser_act   {"steps": [...], "record": "configure-smtp"}
+browser_skill {"action": "replay", "name": "configure-smtp", "params": {"host": "smtp.acme.io"}}
 ```
 
-Set `FBA_SITE_MEMORY=0` to switch it off entirely.
+Replay is pure execution — zero model calls, 675 ms measured. Recorded
+`assert` steps double as verifiers: a changed UI fails fast and honestly.
 
-### 6. Parallel agents get independent browsers
+### 8 · Parallel agents, isolated browsers
 
-Each workspace root maps to its own Chromium profile directory. Git worktrees are detected
-properly (a `.git` *file* → resolve `gitdir:`/`commondir`), so two agents on two branches
-have two cookie jars and two logged-in identities.
-
-Two Chromium processes sharing a `user-data-dir` corrupt it, so profiles are locked. A dead
-lock is stolen; a **live** one does not fail the call — an ephemeral clone is created
-instead. And a fresh worktree can inherit a login rather than redoing an OAuth dance:
+Every git workspace — including **linked worktrees**, detected properly via
+`gitdir`/`commondir` — gets its own Chromium profile: separate cookies,
+separate logins. Two agents on the *same* workspace don't corrupt the profile:
+the second gets an auto-seeded ephemeral clone. And a fresh worktree can
+inherit a login instead of redoing OAuth:
 
 ```bash
-fba profiles list
 fba profiles seed --from myapp-a1b2c3d4 --to myapp-e5f6g7h8
 ```
 
----
+## 🏗 Architecture
 
-## CLI
-
-```
-fba mcp       start the MCP stdio server (what an agent host launches)
-fba doctor    diagnose node, chromium, home, workspace, profiles, index
-fba index     build or refresh the code index
-fba map       search the code index
-fba open      open a url or route and print what the agent would see
-fba act       run an action program from JSON
-fba skill     manage and replay compiled trajectories
-fba profiles  manage per-workspace browser profiles
-fba sites     inspect what browsing has taught the agent (list | show | forget)
-fba warm      pre-launch the browser (removes cold start from the first call)
-fba bench     micro-benchmark the whole pipeline
+```mermaid
+flowchart TB
+    A["L4 · MCP surface<br/><i>11 coarse tools, compact results</i>"]
+    B["L3 · Knowledge<br/><i>code index · site memory · skill cache</i>"]
+    C["L2 · Executor<br/><i>action programs · self-healing targets · bulk forms</i>"]
+    D["L1 · Page runtime<br/><i>one-eval snapshot · settle detection · find()</i>"]
+    E["L0 · Browser pool<br/><i>warm contexts · per-workspace profiles · request blocking</i>"]
+    A --> B --> C --> D --> E
 ```
 
-## Configuration
+Each layer knows only the one below it, through the interfaces in
+[`src/contracts.ts`](src/contracts.ts). Full rationale in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-Precedence: explicit overrides → environment → `.fbarc.json` in the workspace →
-`config.json` in the FBA home → defaults.
+## 💻 CLI
+
+```text
+fba mcp        start the MCP stdio server
+fba doctor     diagnose chromium, workspace, profiles, index — run this first
+fba index      build/refresh the code index          fba map [q]   search it
+fba open       open a url/route, print what the agent sees
+fba act        run an action program from JSON       fba skill     manage trajectories
+fba profiles   per-workspace browser profiles        fba sites     inspect learned memory
+fba warm       pre-launch the browser                fba bench     honest latency numbers
+```
+
+## ⚙️ Configuration
+
+Precedence: explicit overrides → env → `.fbarc.json` (workspace) → `config.json` (home) → defaults.
 
 | Variable | Default | |
-| --- | --- | --- |
-| `FBA_WORKSPACE` | git root of cwd | Workspace whose profile and code index are used |
-| `FBA_HOME` | `~/.faster-browser-agent` | Profiles, skills and indexes |
+|---|---|---|
+| `FBA_WORKSPACE` | git root of cwd | Profile + code index scope |
+| `FBA_HOME` | `~/.faster-browser-agent` | Profiles, skills, indexes, memory |
 | `FBA_CHROMIUM_PATH` | auto-detected | Browser executable |
-| `FBA_HEADLESS` | `true` | |
-| `FBA_BASE_URL` | inferred from source | Dev-server origin for route deep-links |
+| `FBA_BASE_URL` | inferred from source | Dev-server origin for deep links |
 | `FBA_SITE_MEMORY` | `true` | Learn pages/controls/timings per origin |
 | `FBA_BLOCKING` | `true` | Abort images/media/fonts/analytics |
-| `FBA_MAX_NODES` | `300` | Snapshot node cap |
-| `FBA_TIMEOUT_MS` | `15000` | |
-| `FBA_LOG_LEVEL` | `warn` | All logging goes to stderr |
+| `FBA_HEADLESS` | `true` | |
+| `FBA_MAX_NODES` / `FBA_TIMEOUT_MS` / `FBA_LOG_LEVEL` | `300` / `15000` / `warn` | |
 
-## Library use
+## 📦 Library use
 
 The MCP server is one consumer of the library, not the library itself:
 
 ```ts
 import { createAgentBrowser } from 'faster-browser-agent';
 
-const { pool, executor, indexer, shutdown } = await createAgentBrowser();
+const { pool, executor, indexer, memory, shutdown } = await createAgentBrowser();
 const session = await pool.acquire();
 await session.goto('http://localhost:3000/settings');
-const observation = await session.observe();
+const observation = await session.observe();   // compact tree or diff
 await shutdown();
 ```
 
----
+## ⚠️ Honest limitations
 
-## Limitations
+- **Chromium only.** Firefox/WebKit are not wired up.
+- **Cross-origin iframes are not traversed** — noted in the snapshot, not descended into.
+- **The code index is regex-based, not a parser.** Fast and framework-agnostic;
+  unusual routing setups may be missed. A miss is a *missing* route, never a wrong one.
+- **Site memory needs ~5 samples** per origin before the adaptive settle kicks in.
+- **Settle is a heuristic.** A page polling on a short interval never goes quiet
+  and hits the timeout cap.
+- **No video/trace recording, no HAR replay.** Test-suite machinery, deliberately out of scope.
+- **A fresh automated Chromium has a fresh fingerprint.** Sites behind aggressive
+  bot detection may block it where your everyday browser sails through.
 
-Worth knowing before you adopt it:
-
-- **Cross-origin iframes are not traversed.** The snapshot notes their presence but does not
-  descend into them.
-- **Site memory needs a few visits before it pays.** The adaptive settle budget
-  deliberately stays silent below five samples per kind, because a budget guessed
-  from two samples is worse than the default.
-- **The code index is regex-based, not a parser.** That is what makes it fast and
-  framework-agnostic; it also means unusual routing setups may be missed. Implausible
-  extractions are filtered out rather than guessed at, so a miss shows up as a missing
-  route, never a wrong one.
-- **Settle detection is a heuristic.** A page that polls on a short interval never goes
-  quiet and will hit the timeout cap instead.
-- **Chromium only.** Firefox and WebKit are not wired up.
-- **No screenshots.** Deliberate — but if your task is genuinely visual, this is the wrong
-  tool for that part of it.
-
-## Development
+## 🛠 Development
 
 ```bash
-npm install
-npm run build
-npm test          # 286 tests, including real-browser integration tests
-npm run typecheck
+npm install && npm run build
+npm test           # 295 tests, including real-browser integration
+npm run typecheck  # strict, zero errors
 ```
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design rationale of each layer.
 
 ## License
 
-MIT
+[MIT](LICENSE)

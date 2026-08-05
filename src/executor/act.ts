@@ -18,6 +18,9 @@
  *      churn                     retry when the page navigates mid-step
  */
 
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import type { Locator } from 'playwright-core';
 
 import type { Executor, ResolvedTarget, Session, TargetResolver } from '../contracts.js';
@@ -550,7 +553,69 @@ export class DefaultExecutor implements Executor {
           detail: value === undefined ? 'evaluated' : `evaluated → ${truncate(safeJson(value), 200)}`,
         };
       }
+
+      case 'clickAt': {
+        // Vision fallback: CSS-pixel viewport coordinates, i.e. exactly the
+        // coordinate space of a browser_screenshot image. No resolution, no
+        // healing — the caller has looked at pixels and knows what it wants.
+        await session.page.mouse.click(step.x, step.y, {
+          button: step.button ?? 'left',
+          clickCount: step.clickCount ?? 1,
+        });
+        return { status: 'ok', detail: `clicked at (${step.x}, ${step.y})` };
+      }
+
+      case 'drag': {
+        const source = await ctx.resolver.resolve(session, step.target);
+        ctx.resolution = source.resolution;
+        const destination = await ctx.resolver.resolve(session, step.to);
+        await source.locator.dragTo(destination.locator, { timeout: ctx.timeoutMs });
+        return {
+          status: 'ok',
+          detail: `dragged ${describeTarget(step.target)} to ${describeTarget(step.to)}`,
+        };
+      }
+
+      case 'resize': {
+        await session.page.setViewportSize({
+          width: Math.max(320, Math.round(step.width)),
+          height: Math.max(240, Math.round(step.height)),
+        });
+        return { status: 'ok', detail: `viewport ${Math.round(step.width)}x${Math.round(step.height)}` };
+      }
+
+      case 'download':
+        return this.download(session, step, ctx);
     }
+  }
+
+  /**
+   * Click-and-download as one step.
+   *
+   * The download event and the click must be awaited together: subscribing
+   * after the click races the browser, and a download that started before the
+   * listener existed is silently lost.
+   */
+  private async download(
+    session: Session,
+    step: Extract<ActionStep, { do: 'download' }>,
+    ctx: StepContext,
+  ): Promise<StepOutcome> {
+    const resolved = await ctx.resolver.resolve(session, step.target);
+    ctx.resolution = resolved.resolution;
+    const timeout = step.timeoutMs ?? Math.max(ctx.timeoutMs, 10_000);
+
+    const [download] = await Promise.all([
+      session.page.waitForEvent('download', { timeout }),
+      resolved.locator.click({ timeout: ctx.timeoutMs }),
+    ]);
+
+    const dir = join(session.config.home, 'downloads');
+    await mkdir(dir, { recursive: true });
+    // Prefix with a timestamp so two downloads of "export.csv" never clobber.
+    const path = join(dir, `${Date.now()}-${sanitizeFilename(download.suggestedFilename())}`);
+    await download.saveAs(path);
+    return { status: 'ok', detail: `downloaded → ${path}` };
   }
 
   // -------------------------------------------------------------------------
@@ -934,6 +999,12 @@ function safeUrl(session: Session): string {
   } catch {
     return '';
   }
+}
+
+/** Keep suggested filenames from escaping the downloads directory. */
+function sanitizeFilename(name: string): string {
+  const safe = name.replace(/[/\\<>:"|?*\u0000-\u001f]/g, '_').slice(0, 120);
+  return safe || 'download';
 }
 
 function safeJson(value: unknown): string {
