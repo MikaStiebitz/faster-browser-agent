@@ -1210,9 +1210,14 @@ async function cmdMap(ctx: Ctx): Promise<number> {
       match.kind,
       truncate(match.label, 48),
       truncate(matchTargetText(match), 56),
-      match.source,
+      // The call sites are the answer for a translation hit, and the acl turns
+      // a blank page from a mystery into a permission fact — so both belong in
+      // the source column rather than being dropped.
+      [match.source, match.acl ? `[acl ${match.acl}]` : '', ...(match.callSites ?? [])]
+        .filter(Boolean)
+        .join('  '),
     ]),
-    { head: ['score', 'kind', 'label', 'url / target', 'source'], align: ['r'], style: ctx.style },
+    { head: ['score', 'kind', 'label', 'url / target', 'source / used at'], align: ['r'], style: ctx.style },
   )) {
     ctx.io.out(line);
   }

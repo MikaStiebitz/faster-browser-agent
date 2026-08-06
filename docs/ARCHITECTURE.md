@@ -60,9 +60,20 @@ does not fail the call — the manager clones an **ephemeral profile** seeded fr
 primary and deletes it on release. Parallel agents on the same workspace therefore degrade
 to "separate but similar state" rather than to an error.
 
-**Seeding.** `profiles seed --from A --to B` copies the cookie/localStorage/IndexedDB
-state between profiles, so a freshly created worktree inherits a logged-in session instead
-of redoing an OAuth dance.
+**Seeding and session injection.** `profiles seed --from A --to B` copies the
+cookie/localStorage/IndexedDB state between profiles, so a freshly created worktree
+inherits a logged-in session instead of redoing an OAuth dance. For everything that lives
+outside a profile, `browser_session` injects state directly: cookies (as a raw `Cookie`
+header, a `{name: value}` map, or full cookie objects), web storage, or a whole Playwright
+`storageState`. Many internal tools authenticate with a server-set session cookie behind
+SSO or MFA — not automatable at all from an agent — so injecting the session an operator
+already holds is the difference between being able to drive the tool and not.
+
+**Session namespacing.** Within one workspace the implicit session lookup returns the
+most-recently-used tab, which is right for a single agent and actively wrong for several
+workers in one process: they would silently drive each other's page. `sessionKey` (or
+`FBA_SESSION_KEY`) namespaces the lookup, so each worker gets its own tab while still
+sharing the warm browser and the cookie jar.
 
 **Request blocking.** Images, media and fonts are aborted by default, along with a list of
 analytics/ads hosts. Documents and XHR/fetch are *never* blocked — the app needs its own
@@ -100,14 +111,28 @@ Four compressions do the heavy lifting on token count:
 
 **Settle detection.** `waitForTimeout(2000)` sprinkled through a script is the most common
 hidden time sink. The runtime instead tracks DOM mutations (one `MutationObserver`) and
-in-flight requests (patched `fetch`/`XHR` plus a `PerformanceObserver`), and resolves once
-both have been quiet for their windows (300 ms network, 200 ms DOM) with a hard cap.
-Crucially the wait resolves **in-page**, so it costs one round trip rather than a polling
-loop. Most pages settle in 300–500 ms.
+in-flight requests (patched `fetch`/`XHR` plus a `PerformanceObserver`). Crucially the wait
+resolves **in-page**, so it costs one round trip rather than a polling loop.
 
-The Node side keeps its own in-flight counter from Playwright's `request`/`requestfinished`
-events — free, no round trip, and it sees requests that started before injection. Settle
-requires both halves to agree.
+The rule is **DOM quiet is necessary; network quiet is sufficient but not necessary.**
+
+Requiring both — the original design — is wrong for any app that polls: a React Query
+refetch interval, a session heartbeat, an analytics beacon, a dev-server HMR channel. None
+of those ever leave a 300 ms gap, so every action burned the entire timeout. Measured
+against a real Next.js admin console: **3.3 s per settle, 96 % of wall-clock**, on a page
+that was visibly done in ~150 ms.
+
+So when the DOM has been still for a longer confidence window (2.5× `domQuietMs`, floor
+500 ms, clamped to 40 % of the budget) while traffic continues, the runtime settles anyway
+and reports `dom-stable`. This cannot fire prematurely, and that is exactly why it is safe:
+**a request that matters mutates the DOM when it lands**, which resets the quiet clock and
+makes us wait again. Only traffic that changes nothing an agent can perceive takes this
+path. Measured on a 120 ms-interval poller: 515 ms instead of the full 5 s timeout.
+
+The Node side sees requests the in-page patch cannot (the document, subresources predating
+injection), so it keeps its own counter — but it abandons the wait the moment the page
+reports `dom-stable`, or it would reintroduce the very stall the rule removes. That counter
+comes from Playwright's `request`/`requestfinished` events, so it is free — no round trip.
 
 **find().** A ranked in-page search by role/name/text/label/placeholder/testId. This is the
 backbone of self-healing: a stale ref never fails a step if the element is still findable.
@@ -210,6 +235,37 @@ settle windows come from:
 | memory off (generic 300/200 default) | 228 ms |
 | memory on, learning during the run | 128 ms, switching at the 6th sample |
 | memory on, primed | 128 ms |
+
+### When convention fails: configured route registries
+
+The built-in extractors encode twelve frameworks' conventions, which is worth exactly
+nothing to an application that has its own. A legacy monolith typically keeps its entire
+navigation in one hand-maintained array — `'page' => …, 'sub' => …, 'aclKey' => …` — and
+against such a repo the index finds zero routes, which takes the headline feature with it.
+
+Rather than growing a thirteenth special case, `routeRegistry` in `.fbarc.json` names the
+file, a URL template and a field mapping. A single generic scanner reads `key => value`
+records out of PHP, JS or JSON literals (skipping strings and comments, so a `]` inside a
+label cannot desynchronise it), and the template renders each record into a deep link.
+Query segments whose placeholder is empty are dropped rather than emitted as `&sub=`,
+because a trailing empty parameter changes which page a real application serves.
+
+A declared `aclField` rides along on the route. That converts the most confusing failure
+mode an agent meets — a page that loads but renders nothing — from a guessing game into a
+stated fact: the injected session lacks this permission.
+
+### The return path: screen to source
+
+Finding "Print delivery note" in a translation catalogue answers half the question. The
+other half — *which template renders it* — was left to the caller to grep out by hand.
+
+So catalogue extraction runs a second pass over the source, collecting every
+`trans('key')` / `translate('key')` / `{{ 'key'|trans }}` call site and attaching it to the
+entry. The permissive call patterns are made safe by intersecting with keys a catalogue
+actually defines, so unrelated `t('some string')` calls cannot pollute the index. Server
+template extensions (`.php`, `.twig`, `.erb`, `.hbs`, `.ejs`) are scanned for exactly this
+reason: without them a server-rendered app's entire `templates/` tree is invisible, which
+is most of its UI.
 
 ### Skill cache — compiled trajectories
 

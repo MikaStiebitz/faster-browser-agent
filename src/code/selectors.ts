@@ -31,7 +31,12 @@ import {
   type SourceFile,
 } from './scan.js';
 
-const MARKUP_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.svelte', '.astro', '.html']);
+const MARKUP_EXTS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.vue', '.svelte', '.astro', '.html',
+  // Server-side templates carry the same selectors and labels as JSX does.
+  '.php', '.phtml', '.twig', '.erb', '.hbs', '.ejs',
+]);
 
 const MAX_SELECTORS = 4000;
 const MAX_VALUE_LENGTH = 120;
@@ -285,6 +290,31 @@ function pickProp(object: ObjectLiteral, keys: readonly string[]): string | unde
  * plainly that the app has `general`, `advanced` and `networking` sections and
  * what each of them is called.
  */
+/** A nav item points somewhere: a path, a url, or a template hole. */
+function isDestination(item: { label: string; href?: string; id?: string }): boolean {
+  if (!item.href) return false;
+  const href = item.href.trim();
+  return /^[./#]/.test(href) || /^https?:/i.test(href) || href.startsWith('${');
+}
+
+/** `mainNav`, `settingsTabs`, `sidebarLinks` — the developer said what it is. */
+function isNavigationName(owner: string | undefined): boolean {
+  return !!owner && /(nav|tab|menu|link|route|section|sidebar|breadcrumb)/i.test(owner);
+}
+
+/**
+ * Reject labels that are plainly not UI text.
+ *
+ * SCREAMING_SNAKE and ALL-CAPS multi-word values are constants (`DAY MS`,
+ * `MAX_RETRIES`); nav labels are written for humans.
+ */
+function looksLikeUiLabel(label: string): boolean {
+  const trimmed = label.trim();
+  if (trimmed.length < 2 || trimmed.length > 60) return false;
+  if (/^[A-Z0-9]+(?:[_\s][A-Z0-9]+)+$/.test(trimmed)) return false;
+  return /[a-zA-Z]/.test(trimmed);
+}
+
 export async function extractNavGroups(root: string, files: ScannedFile[]): Promise<NavGroupEntry[]> {
   // See `extractRoutes`: `root` is signature symmetry, paths come from `files`.
   void root;
@@ -326,9 +356,18 @@ export async function extractNavGroups(root: string, files: ScannedFile[]): Prom
         });
       }
       if (items.length < 2) continue;
+      if (!items.some((item) => looksLikeUiLabel(item.label))) continue;
 
       const first = siblings[0];
       const owner = first?.owner;
+      // Shape alone cannot tell navigation from a status enum or a duration
+      // table — `[{id:'disabled', label:'Disabled'}]` is structurally identical
+      // to a tab definition. Two independent signals disambiguate, and one must
+      // hold: the items actually link somewhere, or the developer named the
+      // array after navigation. Observed noise this removes: "Disabled",
+      // "DAY MS"; observed navigation it keeps: id-only tab arrays.
+      const links = items.some((item) => isDestination(item));
+      if (!links && !isNavigationName(owner)) continue;
       out.push({
         label: owner ? titleizeOwner(owner) : undefined,
         items,

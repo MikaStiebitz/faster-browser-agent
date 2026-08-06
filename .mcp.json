@@ -1,12 +1,8 @@
 {
   "mcpServers": {
     "browser": {
-      "command": "npx",
-      "args": ["-y", "faster-browser-agent@latest", "mcp"],
-      "env": {
-        "FBA_WORKSPACE": "${CLAUDE_PROJECT_DIR}",
-        "FBA_HOME": "${CLAUDE_PLUGIN_DATA}"
-      }
+      "command": "node",
+      "args": ["./dist/cli.js", "mcp"]
     }
   }
 }

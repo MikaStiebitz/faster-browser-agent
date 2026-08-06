@@ -491,15 +491,28 @@ export class PageSession implements Session {
       return { settled: false, reason: 'navigated', waitedMs: Date.now() - startedAt } satisfies SettleResult;
     });
 
-    const [pageQuiet, networkQuiet] = await Promise.all([inPage, this.waitNetworkQuiet(o.networkQuietMs, deadline)]);
+    // The in-page half owns the verdict; the Node half only adds the requests it
+    // can see that the in-page patch cannot (the document, and subresources that
+    // started before injection). When the page reports `dom-stable` it has
+    // already decided the remaining traffic is background polling, so continuing
+    // to block on network quiet here would reintroduce exactly the stall the
+    // in-page rule exists to avoid.
+    const release = { stop: false };
+    const networkWait = this.waitNetworkQuiet(o.networkQuietMs, deadline, release);
+    const pageQuiet = await inPage;
+    if (pageQuiet.reason === 'dom-stable') release.stop = true;
+    const networkQuiet = await networkWait;
 
     const waitedMs = Date.now() - startedAt;
-    const settled = pageQuiet.settled && networkQuiet;
-    if (settled) {
+    const domStable = pageQuiet.settled && pageQuiet.reason === 'dom-stable';
+    if (pageQuiet.settled && (networkQuiet || domStable)) {
       // Only successful settles are sampled. Timeouts measure our own cap, not
       // the site, and feeding them back would ratchet the budget upward.
       this.deps.memory?.recordSettle(this.safeUrl(), waitedMs, kind);
-      return { settled: true, reason: 'quiet', waitedMs };
+      const pending = this.activeRequests(Date.now());
+      return domStable && !networkQuiet
+        ? { settled: true, reason: 'dom-stable', waitedMs, pendingRequests: pending }
+        : { settled: true, reason: 'quiet', waitedMs };
     }
     if (this.isClosed()) return { settled: false, reason: 'detached', waitedMs };
 
@@ -512,11 +525,18 @@ export class PageSession implements Session {
     return { settled: false, reason: 'timeout', waitedMs, pendingRequests: pending };
   }
 
-  /** Resolve true once no request has been in flight for `quietMs`. */
-  private async waitNetworkQuiet(quietMs: number, deadline: number): Promise<boolean> {
+  /**
+   * Resolve true once no request has been in flight for `quietMs`.
+   *
+   * `release.stop` lets the caller abandon the wait the moment the in-page half
+   * settles on DOM stability — at that point the answer no longer matters and
+   * waiting for it would be pure latency on a polling app.
+   */
+  private async waitNetworkQuiet(quietMs: number, deadline: number, release?: { stop: boolean }): Promise<boolean> {
     for (;;) {
       const now = Date.now();
       if (this.activeRequests(now) === 0 && now - this.lastNetworkAt >= quietMs) return true;
+      if (release?.stop) return false;
       if (now >= deadline) return false;
       await delay(Math.min(NODE_POLL_MS, Math.max(1, deadline - now)));
     }

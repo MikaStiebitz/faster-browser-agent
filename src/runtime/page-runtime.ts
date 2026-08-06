@@ -2163,14 +2163,48 @@ function installFbaRuntime(): void {
     };
   }
 
-  function isSettled(options?: SettleOptions): boolean {
-    const o = settleOptionsOf(options);
-    if (doc.readyState !== 'complete') return false;
-    if (inFlightCount() > 0) return false;
+  /**
+   * How long the DOM must stay still before we settle *in spite of* ongoing
+   * network traffic.
+   *
+   * Deliberately several times `domQuietMs`: it is the confidence threshold for
+   * "this traffic is background noise, not a pending render".
+   */
+  function domStableWindow(o: Required<SettleOptions>): number {
+    const wanted = o.domQuietMs * 2.5 > 500 ? o.domQuietMs * 2.5 : 500;
+    // Never let the escape hatch consume so much of the budget that a genuine
+    // network wait would have finished first anyway.
+    const ceiling = o.timeoutMs * 0.4 > 500 ? o.timeoutMs * 0.4 : 500;
+    return wanted < ceiling ? wanted : ceiling;
+  }
+
+  /**
+   * The settle decision.
+   *
+   * DOM quiet is *necessary*; network quiet is *sufficient but not necessary*.
+   *
+   * The original rule required both, which is wrong for any app that polls —
+   * React Query refetch intervals, session heartbeats, analytics beacons, a
+   * dev-server HMR channel. Those never produce network quiet, so every single
+   * action burned the whole timeout (measured: 3.3s per step against a real
+   * Next.js console, 96% of wall-clock).
+   *
+   * Settling on DOM stability alone cannot fire prematurely, and that is the
+   * whole reason it is safe: a request that actually matters mutates the DOM
+   * when it lands, which resets `lastMutationAt` and makes us wait again. Only
+   * traffic that changes nothing an agent can perceive lets this path win.
+   */
+  function settleVerdict(o: Required<SettleOptions>): 'pending' | 'quiet' | 'dom-stable' {
+    if (doc.readyState !== 'complete') return 'pending';
     const t = nowMs();
-    if (t - lastNetworkAt < o.networkQuietMs) return false;
-    if (t - lastMutationAt < o.domQuietMs) return false;
-    return true;
+    const domQuietFor = t - lastMutationAt;
+    if (domQuietFor < o.domQuietMs) return 'pending';
+    if (inFlightCount() === 0 && t - lastNetworkAt >= o.networkQuietMs) return 'quiet';
+    return domQuietFor >= domStableWindow(o) ? 'dom-stable' : 'pending';
+  }
+
+  function isSettled(options?: SettleOptions): boolean {
+    return settleVerdict(settleOptionsOf(options)) !== 'pending';
   }
 
   function waitSettled(options?: SettleOptions): Promise<SettleResult> {
@@ -2184,8 +2218,12 @@ function installFbaRuntime(): void {
       };
       const tick = function (): void {
         try {
-          if (isSettled(o)) {
-            finish(true, 'quiet');
+          const verdict = settleVerdict(o);
+          if (verdict !== 'pending') {
+            // The reason is reported honestly so the Node half knows not to keep
+            // waiting on a network that will never go quiet, and so a caller can
+            // see *why* a page settled.
+            finish(true, verdict);
             return;
           }
           if (nowMs() - startedAt >= o.timeoutMs) {

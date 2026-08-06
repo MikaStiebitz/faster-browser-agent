@@ -21,13 +21,21 @@ import { join, resolve } from 'node:path';
 import { paths } from '../config.js';
 import type { CodeIndexer } from '../contracts.js';
 import { workspaceIdFor } from '../browser/profile.js';
-import { CODE_INDEX_SCHEMA, type CodeIndex, type CodeMatch, type FbaConfig, type RouteEntry } from '../types.js';
+import {
+  CODE_INDEX_SCHEMA,
+  type CodeIndex,
+  type CodeMatch,
+  type FbaConfig,
+  type RouteEntry,
+  type RouteRegistryConfig,
+} from '../types.js';
 import { errorMessage } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { rankMatches } from '../util/text.js';
 import { extractConfigFields } from './config-fields.js';
 import { absoluteUrl, isConcretePath, searchIndex } from './match.js';
 import { detectBaseUrl, detectFrameworks, extractRoutes, normalizePattern, patternParams, routeToPath } from './routes.js';
+import { extractRegistryRoutes, extractTranslations } from './registry.js';
 import { extractNavGroups, extractSelectors } from './selectors.js';
 import { clearSourceCache, scanWorkspace, type ScannedFile } from './scan.js';
 
@@ -65,7 +73,13 @@ export class FsCodeIndexer implements CodeIndexer {
     });
     this.inFlight.set(root, task);
     try {
-      return await task;
+      const index = await task;
+      // Explicit configuration outranks inference, and it is applied here so
+      // every consumer sees the same origin. It matters most exactly where
+      // detection cannot help: a server-rendered monolith has no dev script to
+      // read a port from, so the user states the origin and route matches have
+      // to honour it.
+      return this.config.baseUrl ? { ...index, baseUrl: this.config.baseUrl } : index;
     } finally {
       this.inFlight.delete(root);
     }
@@ -159,7 +173,7 @@ export class FsCodeIndexer implements CodeIndexer {
       }
     }
 
-    const index = await buildIndex(root, files);
+    const index = await buildIndex(root, files, this.config.routeRegistry);
     this.memory.set(root, { index, checkedAt: Date.now() });
     await this.persist(root, index);
     return index;
@@ -201,7 +215,11 @@ export class FsCodeIndexer implements CodeIndexer {
 // Building
 // ---------------------------------------------------------------------------
 
-export async function buildIndex(root: string, files?: ScannedFile[]): Promise<CodeIndex> {
+export async function buildIndex(
+  root: string,
+  files?: ScannedFile[],
+  registries?: RouteRegistryConfig | RouteRegistryConfig[],
+): Promise<CodeIndex> {
   const started = Date.now();
   const scanned = files ?? (await scanWorkspace(root));
   const packageJson = await readPackageJson(root);
@@ -210,12 +228,20 @@ export async function buildIndex(root: string, files?: ScannedFile[]): Promise<C
   // The extractors are independent and I/O bound; running them together, on
   // top of the shared source cache, keeps a full rebuild to roughly one read
   // pass over the workspace.
-  const [routes, selectors, navGroups, configFields] = await Promise.all([
+  // A configured registry is authoritative for apps the built-ins cannot see,
+  // so its routes are merged in rather than replacing anything: a repo can have
+  // both a framework router and a legacy menu table.
+  const registryList = registries ? (Array.isArray(registries) ? registries : [registries]) : [];
+
+  const [routes, registryRoutes, translations, selectors, navGroups, configFields] = await Promise.all([
     extractRoutes(root, scanned, frameworks),
+    extractRegistryRoutes(scanned, registryList),
+    extractTranslations(scanned),
     extractSelectors(root, scanned),
     extractNavGroups(root, scanned),
     extractConfigFields(root, scanned),
   ]);
+  const allRoutes = mergeRoutes(routes, registryRoutes);
   // Nothing else needs the file bodies; a long-lived server should not hold
   // tens of megabytes of source until the cache ages out.
   clearSourceCache();
@@ -229,7 +255,8 @@ export async function buildIndex(root: string, files?: ScannedFile[]): Promise<C
     schema: CODE_INDEX_SCHEMA,
     frameworks,
     baseUrl: detectBaseUrl(root, packageJson, scanned),
-    routes,
+    routes: allRoutes,
+    translations,
     selectors,
     configFields,
     navGroups,
@@ -247,6 +274,7 @@ export function emptyIndex(root: string): CodeIndex {
     frameworks: [],
     routes: [],
     selectors: [],
+    translations: [],
     configFields: [],
     navGroups: [],
     files: {},
@@ -354,4 +382,18 @@ function finish(
   // supply params.
   if (!isConcretePath(path)) return undefined;
   return absoluteUrl(baseUrl, path) ?? path;
+}
+
+/**
+ * Combine framework-derived and registry-derived routes.
+ *
+ * Registry entries win on collision: a hand-maintained menu table states the
+ * label and the permission a convention-based guess cannot know.
+ */
+function mergeRoutes(framework: RouteEntry[], registry: RouteEntry[]): RouteEntry[] {
+  if (registry.length === 0) return framework;
+  const byPattern = new Map<string, RouteEntry>();
+  for (const route of framework) byPattern.set(route.pattern, route);
+  for (const route of registry) byPattern.set(route.pattern, route);
+  return [...byPattern.values()];
 }

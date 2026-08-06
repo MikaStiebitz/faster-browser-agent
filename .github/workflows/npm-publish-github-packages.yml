@@ -16,6 +16,9 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
+      # The suite includes real-browser integration tests; a bare runner has no
+      # Chromium, so `npm test` fails without this.
+      - run: npx playwright-core install --with-deps chromium
       - run: npm test
 
   publish-gpr:
