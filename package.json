@@ -4,6 +4,14 @@
   "description": "A code-aware, token-efficient browser automation MCP server for AI agents. Deep-links instead of clicking, compresses perception, caches trajectories, and isolates browser state per git workspace.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MikaStiebitz/faster-browser-agent.git"
+  },
+  "homepage": "https://github.com/MikaStiebitz/faster-browser-agent#readme",
+  "bugs": {
+    "url": "https://github.com/MikaStiebitz/faster-browser-agent/issues"
+  },
   "engines": {
     "node": ">=20.10.0"
   },
