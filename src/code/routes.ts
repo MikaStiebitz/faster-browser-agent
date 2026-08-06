@@ -513,7 +513,7 @@ function objectRouteLabel(object: ObjectLiteral): string | undefined {
 // Extraction entry point
 // ---------------------------------------------------------------------------
 
-const CONTENT_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.rb']);
+const CONTENT_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.rb', '.php']);
 
 /** Files worth reading for declarative routes; cheap pre-filter on the path. */
 function mayDeclareRoutes(file: ScannedFile): boolean {

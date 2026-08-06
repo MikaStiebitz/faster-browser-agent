@@ -18,6 +18,7 @@ import { scanWorkspace } from '../src/code/scan.js';
 import { extractConfigFields } from '../src/code/config-fields.js';
 import { extractNavGroups, extractSelectors } from '../src/code/selectors.js';
 import { defaultConfig } from '../src/config.js';
+import { CODE_INDEX_SCHEMA } from '../src/types.js';
 
 let root: string;
 let home: string;
@@ -222,7 +223,7 @@ describe('FsCodeIndexer', () => {
     const indexer = makeIndexer();
     const index = await indexer.get(root);
 
-    expect(index.schema).toBe(1);
+    expect(index.schema).toBe(CODE_INDEX_SCHEMA);
     expect(index.baseUrl).toBe('http://localhost:4001');
     expect(index.routes.length).toBeGreaterThan(3);
     expect(Object.keys(index.files).length).toBe(files.length);

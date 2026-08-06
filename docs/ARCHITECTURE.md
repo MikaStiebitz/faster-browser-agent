@@ -236,6 +236,37 @@ settle windows come from:
 | memory on, learning during the run | 128 ms, switching at the 6th sample |
 | memory on, primed | 128 ms |
 
+### When convention fails: configured route registries
+
+The built-in extractors encode twelve frameworks' conventions, which is worth exactly
+nothing to an application that has its own. A legacy monolith typically keeps its entire
+navigation in one hand-maintained array — `'page' => …, 'sub' => …, 'aclKey' => …` — and
+against such a repo the index finds zero routes, which takes the headline feature with it.
+
+Rather than growing a thirteenth special case, `routeRegistry` in `.fbarc.json` names the
+file, a URL template and a field mapping. A single generic scanner reads `key => value`
+records out of PHP, JS or JSON literals (skipping strings and comments, so a `]` inside a
+label cannot desynchronise it), and the template renders each record into a deep link.
+Query segments whose placeholder is empty are dropped rather than emitted as `&sub=`,
+because a trailing empty parameter changes which page a real application serves.
+
+A declared `aclField` rides along on the route. That converts the most confusing failure
+mode an agent meets — a page that loads but renders nothing — from a guessing game into a
+stated fact: the injected session lacks this permission.
+
+### The return path: screen to source
+
+Finding "Print delivery note" in a translation catalogue answers half the question. The
+other half — *which template renders it* — was left to the caller to grep out by hand.
+
+So catalogue extraction runs a second pass over the source, collecting every
+`trans('key')` / `translate('key')` / `{{ 'key'|trans }}` call site and attaching it to the
+entry. The permissive call patterns are made safe by intersecting with keys a catalogue
+actually defines, so unrelated `t('some string')` calls cannot pollute the index. Server
+template extensions (`.php`, `.twig`, `.erb`, `.hbs`, `.ejs`) are scanned for exactly this
+reason: without them a server-rendered app's entire `templates/` tree is invisible, which
+is most of its UI.
+
 ### Skill cache — compiled trajectories
 
 Once a flow succeeds, its action program is stored under `(origin, name)`. Replaying is pure

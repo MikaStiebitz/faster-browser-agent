@@ -680,6 +680,42 @@ export type UiFramework =
  * clicking through `Settings -> Advanced -> Networking` (3 round trips, 3
  * snapshots), it deep-links straight to `/settings/advanced/networking`.
  */
+/**
+ * Teach the indexer about a hand-rolled route registry.
+ *
+ * The built-in extractors know twelve JS frameworks, which is worth nothing to
+ * a legacy monolith whose entire navigation lives in one array in one file.
+ * Those registries are structurally trivial — a list of records — so pointing
+ * at the file and describing how a record becomes a URL unlocks the whole
+ * application without the indexer learning a new framework.
+ *
+ * Example, for a PHP app routing through `index.php?page=…&sub=…`:
+ * ```json
+ * {
+ *   "routeRegistry": {
+ *     "file": "framework/tb/html/mainmenu.php",
+ *     "url": "index.php?page={page}&sub={sub}",
+ *     "label": "{title}",
+ *     "aclField": "aclKey"
+ *   }
+ * }
+ * ```
+ */
+export interface RouteRegistryConfig {
+  /** Workspace-relative path or glob. */
+  file: string | string[];
+  /** URL template; `{field}` placeholders come from the record. */
+  url: string;
+  /** Label template; falls back to a title-cased path segment. */
+  label?: string;
+  /** Record field holding an access-control key, surfaced on the route. */
+  aclField?: string;
+  /** Additional record fields to carry into `RouteEntry.meta`. */
+  meta?: string[];
+  /** Only accept records carrying all of these fields. */
+  require?: string[];
+}
+
 export interface RouteEntry {
   /** Route pattern as written in source, e.g. `/settings/[section]`. */
   pattern: string;
@@ -690,6 +726,33 @@ export interface RouteEntry {
   source: string;
   /** Human label inferred from the file/component/nav definition. */
   label?: string;
+  /**
+   * Permission required to reach the route, when the registry declares one.
+   *
+   * Surfaced so a blank page can be attributed to "the injected session lacks
+   * this permission" instead of the agent re-deriving that the route is wrong.
+   */
+  acl?: string;
+  /** Extra registry fields the adapter was asked to carry through. */
+  meta?: Record<string, string>;
+}
+
+/**
+ * A UI string and every place it is referenced.
+ *
+ * The return path from screen to source: an agent sees "Print delivery note",
+ * the catalogue maps it to `view.print_delivery_note`, and `callSites` says
+ * which template actually renders it. Without that last hop the translation
+ * hit is a dead end the caller has to grep out by hand.
+ */
+export interface TranslationEntry {
+  key: string;
+  value: string;
+  locale?: string;
+  /** Catalogue location, `translations/order.en.json:12`. */
+  source: string;
+  /** `modul/order/index.php:348` — where the key is used. */
+  callSites: string[];
 }
 
 /** A selector literal found in source, with where it came from. */
@@ -729,6 +792,7 @@ export interface CodeIndex {
   /** Best guess at the dev server origin, e.g. `http://localhost:3000`. */
   baseUrl?: string;
   routes: RouteEntry[];
+  translations: TranslationEntry[];
   selectors: SelectorEntry[];
   configFields: ConfigFieldEntry[];
   navGroups: NavGroupEntry[];
@@ -740,12 +804,12 @@ export interface CodeIndex {
   };
 }
 
-export const CODE_INDEX_SCHEMA = 1;
+export const CODE_INDEX_SCHEMA = 2;
 
 /** A ranked answer to "where is the thing called X?". */
 export interface CodeMatch {
   /** What kind of artifact matched. */
-  kind: 'route' | 'selector' | 'config' | 'nav';
+  kind: 'route' | 'selector' | 'config' | 'nav' | 'translation';
   label: string;
   /** Deep link when the match implies a URL. */
   url?: string;
@@ -753,6 +817,10 @@ export interface CodeMatch {
   target?: Target;
   source: string;
   score: number;
+  /** Permission the route requires, when the registry declared one. */
+  acl?: string;
+  /** For translation matches: where the key is actually used in code. */
+  callSites?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -979,6 +1047,8 @@ export interface FbaConfig {
   timezone?: string;
   /** Enable the code index. */
   codeIndex: boolean;
+  /** Hand-rolled route registries to parse in addition to the built-ins. */
+  routeRegistry?: RouteRegistryConfig | RouteRegistryConfig[];
   /** Enable the skill cache. */
   skills: boolean;
   /**

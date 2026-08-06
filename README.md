@@ -10,7 +10,7 @@ its own browser identity.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520.10-339933?logo=node.js&logoColor=white)](package.json)
-[![Tests](https://img.shields.io/badge/tests-307%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen)](test/)
 [![MCP](https://img.shields.io/badge/MCP-11%20coarse%20tools-8b5cf6)](src/mcp/tools.ts)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -129,7 +129,11 @@ itself a latency cost. Eleven coarse tools — `click`, `type`, `press` are
 
 ## ✨ What makes it different
 
-### 1 · Code-aware navigation
+### 1 · Code-aware navigation — including apps with no framework
+
+The workspace is indexed in milliseconds (routes across 12 frameworks,
+`data-testid`s, declarative tab arrays, zod/JSON-Schema config fields, i18n
+catalogues, the dev-server port from your scripts):
 
 The workspace is indexed in milliseconds (routes across 12 frameworks,
 `data-testid`s, declarative tab arrays, zod/JSON-Schema config fields, i18n
@@ -302,6 +306,7 @@ Precedence: explicit overrides → env → `.fbarc.json` (workspace) → `config
 | `FBA_BASE_URL` | inferred from source | Dev-server origin for deep links |
 | `FBA_SITE_MEMORY` | `true` | Learn pages/controls/timings per origin |
 | `FBA_SESSION_KEY` | unset | Namespace the implicit session lookup for parallel workers |
+| `routeRegistry` | unset | *(`.fbarc.json` only)* Parse a hand-rolled route table — see above |
 | `FBA_BLOCKING` | `true` | Abort images/media/fonts/analytics |
 | `FBA_HEADLESS` | `true` | |
 | `FBA_MAX_NODES` / `FBA_TIMEOUT_MS` / `FBA_LOG_LEVEL` | `300` / `15000` / `warn` | |
@@ -325,7 +330,8 @@ await shutdown();
 - **Chromium only.** Firefox/WebKit are not wired up.
 - **Cross-origin iframes are not traversed** — noted in the snapshot, not descended into.
 - **The code index is regex-based, not a parser.** Fast and framework-agnostic;
-  unusual routing setups may be missed. A miss is a *missing* route, never a wrong one.
+  unusual routing setups may be missed. A miss is a *missing* route, never a wrong one —
+  and `routeRegistry` in `.fbarc.json` is the escape hatch when convention fails.
 - **Site memory needs ~5 samples** per origin before the adaptive settle kicks in.
 - **Settle is a heuristic.** A page that mutates the DOM on a sub-200 ms interval (a
   live-updating clock) never goes quiet and hits the timeout cap.
@@ -337,7 +343,7 @@ await shutdown();
 
 ```bash
 npm install && npm run build
-npm test           # 307 tests, including real-browser integration
+npm test           # 316 tests, including real-browser integration
 npm run typecheck  # strict, zero errors
 ```
 

@@ -58,6 +58,15 @@ export const SOURCE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.html',
   '.py',
   '.rb',
+  // Server-rendered stacks: a PHP/Twig monolith keeps its whole UI here, and
+  // without these extensions the entire `templates/` tree is invisible to the
+  // index — which is most of the app for a legacy codebase.
+  '.php',
+  '.phtml',
+  '.twig',
+  '.erb',
+  '.hbs',
+  '.ejs',
   '.json',
   '.yaml',
   '.yml',

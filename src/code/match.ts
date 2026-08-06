@@ -26,6 +26,9 @@ const COMPONENT_WEIGHT = 0.75;
 const WEIGHTS: Record<CodeMatch['kind'], number> = {
   route: 1,
   nav: 0.97,
+  // A translation hit carries its call sites, which is the strongest answer
+  // there is to "I see this text, where is it in the code?".
+  translation: 0.95,
   config: 0.9,
   selector: 0.88,
 };
@@ -34,6 +37,8 @@ const WEIGHTS: Record<CodeMatch['kind'], number> = {
 const PATH_QUERY_WEIGHTS: Record<CodeMatch['kind'], number> = {
   route: 1.25,
   nav: 1.1,
+  // A path query is never asking about display text.
+  translation: 0.4,
   config: 0.6,
   selector: 0.5,
 };
@@ -62,6 +67,20 @@ export function searchIndex(index: CodeIndex, query: string, limit = DEFAULT_LIM
       label: route.label ?? humanizePattern(route.pattern) ?? route.pattern,
       url: routeUrl(index, route),
       source: route.source,
+      ...(route.acl ? { acl: route.acl } : {}),
+    }));
+  }
+
+  // Translations close the screen-to-source loop: the agent sees rendered text,
+  // the catalogue maps it to a key, and the call sites say which template
+  // actually renders it. Matching on the key too means a developer-facing query
+  // finds the same entry.
+  for (const entry of index.translations ?? []) {
+    const score = best(trimmed, [entry.value, entry.key]);
+    push('translation', score, () => ({
+      label: `${entry.value}  (${entry.key})`,
+      source: entry.source,
+      ...(entry.callSites.length > 0 ? { callSites: entry.callSites } : {}),
     }));
   }
 

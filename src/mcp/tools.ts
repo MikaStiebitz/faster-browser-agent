@@ -1108,6 +1108,14 @@ function codeMatchLine(match: CodeMatch, index: CodeIndex, config: FbaConfig): s
     parts.push(`— target ${compactJson(match.target, 120)}`);
   }
   parts.push(`@${match.source}`);
+  // A permission requirement turns "the page rendered blank" from a mystery
+  // into a fact: the injected session lacks this right.
+  if (match.acl) parts.push(`[needs acl ${match.acl}]`);
+  // For a translation hit this is the actual answer — the catalogue only says
+  // what the text is, the call sites say where it is rendered.
+  if (match.callSites && match.callSites.length > 0) {
+    parts.push(`— used at ${match.callSites.slice(0, 4).join(', ')}`);
+  }
   return parts.join(' ');
 }
 
@@ -1152,7 +1160,8 @@ function mapLines(ctx: ToolContext, index: CodeIndex, query?: string): string[] 
     for (const route of routes.slice(0, MAX_MAPPED_ROUTES)) {
       const label = route.label ? ` "${truncate(route.label, 40)}"` : '';
       const params = route.params.length > 0 ? ` params:${route.params.join(',')}` : '';
-      lines.push(`  ${route.pattern}${label}${params}  @${route.source}`);
+      const acl = route.acl ? `  [acl ${route.acl}]` : '';
+      lines.push(`  ${route.pattern}${label}${params}${acl}  @${route.source}`);
     }
     if (routes.length > MAX_MAPPED_ROUTES) {
       lines.push(`  … +${routes.length - MAX_MAPPED_ROUTES} more (pass query to filter)`);

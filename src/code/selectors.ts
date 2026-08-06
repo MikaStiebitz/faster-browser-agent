@@ -31,7 +31,12 @@ import {
   type SourceFile,
 } from './scan.js';
 
-const MARKUP_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.svelte', '.astro', '.html']);
+const MARKUP_EXTS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.vue', '.svelte', '.astro', '.html',
+  // Server-side templates carry the same selectors and labels as JSX does.
+  '.php', '.phtml', '.twig', '.erb', '.hbs', '.ejs',
+]);
 
 const MAX_SELECTORS = 4000;
 const MAX_VALUE_LENGTH = 120;
