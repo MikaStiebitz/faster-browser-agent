@@ -57,6 +57,8 @@ interface ContextEntry {
   release: () => Promise<void>;
   blocking: BlockingHandle;
   sessions: Map<string, PageSession>;
+  /** session id -> namespace key, so parallel workers never share a tab. */
+  sessionKeys: Map<string, string>;
   createdAt: number;
   lastUsedAt: number;
   /** Set while we are tearing it down, so the `close` event does not re-enter. */
@@ -114,11 +116,16 @@ export class DefaultBrowserPool implements BrowserPool {
     const entry = await this.contextFor(workspace);
     entry.lastUsedAt = Date.now();
 
+    // Sessions are looked up within their key namespace, so parallel workers
+    // that pass distinct keys never hand each other the same tab.
+    const key = options.sessionKey ?? process.env.FBA_SESSION_KEY ?? '';
     if (!options.fresh) {
-      const reusable = mostRecentlyUsed(entry.sessions);
+      const reusable = mostRecentlyUsed(entry.sessions, (id) => (entry.sessionKeys.get(id) ?? '') === key);
       if (reusable) return reusable;
     }
-    return this.openSession(entry, options.fresh === true);
+    const session = await this.openSession(entry, options.fresh === true);
+    entry.sessionKeys.set(session.id, key);
+    return session;
   }
 
   get(sessionId: string): Session | undefined {
@@ -268,6 +275,7 @@ export class DefaultBrowserPool implements BrowserPool {
       release: () => profile.release(),
       blocking,
       sessions: new Map<string, PageSession>(),
+      sessionKeys: new Map<string, string>(),
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
       closing: false,
@@ -360,6 +368,7 @@ export class DefaultBrowserPool implements BrowserPool {
       ...(this.memory ? { memory: this.memory } : {}),
       onClose: (id) => {
         entry.sessions.delete(id);
+        entry.sessionKeys.delete(id);
         this.sessionIndex.delete(id);
       },
     });
@@ -419,11 +428,15 @@ export class DefaultBrowserPool implements BrowserPool {
 // Reuse helpers
 // ---------------------------------------------------------------------------
 
-function mostRecentlyUsed(sessions: Map<string, PageSession>): PageSession | undefined {
+function mostRecentlyUsed(
+  sessions: Map<string, PageSession>,
+  accept?: (id: string) => boolean,
+): PageSession | undefined {
   let best: PageSession | undefined;
   let bestAt = -1;
   for (const session of sessions.values()) {
     if (session.isClosed()) continue;
+    if (accept && !accept(session.id)) continue;
     const at = session.info().lastUsedAt;
     if (at > bestAt) {
       best = session;

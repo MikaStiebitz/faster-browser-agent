@@ -38,6 +38,17 @@ import type {
   SkillStore,
 } from '../contracts.js';
 import { capture, describeCapture } from '../browser/capture.js';
+import {
+  exportState,
+  getCookies,
+  getStorage,
+  importState,
+  readStateFile,
+  setCookies,
+  setStorage,
+  type CookieInput,
+  type StorageState,
+} from '../browser/state.js';
 import { targetResolver } from '../executor/resolve.js';
 import { NetControl } from '../net/control.js';
 import { replayEndpoint } from '../net/observer.js';
@@ -237,25 +248,23 @@ const screenshotArgs = z
   .object({
     sessionId,
     workspace: workspaceArg,
-    target: targetSchema.optional().describe('clip to one element — far cheaper than a viewport shot'),
-    fullPage: z.boolean().optional().describe('whole document, height-capped at 4000px'),
-    format: z.enum(['jpeg', 'png']).optional().describe('jpeg (default, small) or png (lossless)'),
+    target: targetSchema.optional().describe('clip to one element — much cheaper'),
+    fullPage: z.boolean().optional().describe('whole document, capped at 4000px'),
+    format: z.enum(['jpeg', 'png']).optional(),
     quality: z.number().int().min(1).max(100).optional().describe('jpeg quality, default 60'),
   })
-  .describe('EXPENSIVE relative to browser_snapshot — use only for genuinely visual questions');
+  .describe('EXPENSIVE — only for genuinely visual questions');
 
 const netArgs = z.object({
-  action: z
-    .enum(['requests', 'mock', 'unmock', 'block', 'allow', 'headers', 'offline', 'online', 'clear', 'status'])
-    .describe('requests: recent traffic | mock/unmock: fake an endpoint | block/allow: kill requests | headers: extra HTTP headers | offline/online | clear | status'),
+  action: z.enum(['requests', 'mock', 'unmock', 'block', 'allow', 'headers', 'offline', 'online', 'clear', 'status']),
   sessionId,
   workspace: workspaceArg,
-  pattern: z.string().optional().describe('substring or *-glob matched against the url'),
+  pattern: z.string().optional().describe('substring or *-glob on the url'),
   method: z.string().optional(),
-  status: z.number().int().optional().describe('mock response status, default 200'),
-  body: z.unknown().optional().describe('mock response body (object -> json)'),
+  status: z.number().int().optional(),
+  body: z.unknown().optional().describe('mock body (object -> json)'),
   contentType: z.string().optional(),
-  headers: z.record(z.string()).optional().describe('extra HTTP headers; empty string value removes one'),
+  headers: z.record(z.string()).optional().describe('empty value removes a header'),
   limit: z.number().int().positive().optional(),
 });
 
@@ -340,11 +349,34 @@ const skillArgs = z.object({
 });
 
 const sessionArgs = z.object({
-  action: z.enum(['list', 'close', 'new', 'warm', 'reset', 'seed', 'profiles']),
+  action: z.enum([
+    'list',
+    'close',
+    'new',
+    'warm',
+    'reset',
+    'seed',
+    'profiles',
+    'cookies',
+    'setCookies',
+    'storage',
+    'setStorage',
+    'exportState',
+    'importState',
+  ]),
   workspace: workspaceArg,
   sessionId,
   from: z.string().optional().describe('seed source: workspace path or profile id'),
   to: z.string().optional().describe('seed target: workspace path or profile id'),
+  url: z.string().optional().describe('cookie scope, e.g. https://app.example.com'),
+  cookies: z
+    .union([z.string(), z.record(z.string()), z.array(z.record(z.unknown()))])
+    .optional()
+    .describe('"a=1; b=2", {name: value}, or cookie objects'),
+  local: z.record(z.string()).optional().describe('localStorage entries'),
+  session: z.record(z.string()).optional().describe('sessionStorage entries'),
+  path: z.string().optional().describe('file for export/importState'),
+  state: z.record(z.unknown()).optional().describe('inline storageState'),
 });
 
 // ---------------------------------------------------------------------------
@@ -806,7 +838,7 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
 
     define(
       'browser_session',
-      'Manage per-workspace browser state: list | new | close | warm | reset | seed | profiles. Seed copies a logged-in profile into a fresh worktree.',
+      'Browser state: list | new | close | warm | reset | seed | profiles | cookies | setCookies | storage | setStorage | exportState | importState. Inject a session instead of driving a login UI.',
       sessionArgs,
       async (args) => sessionText(ctx, profiles, args),
     ),
@@ -1624,6 +1656,96 @@ async function sessionText(
         );
       }
       if (list.length === 0) lines.push('  (none yet)');
+      return join(lines);
+    }
+
+    // --- session state -----------------------------------------------------
+    // Injecting the cookies an operator already holds replaces driving a login
+    // UI, which for SSO/MFA-protected internal tools is often not automatable
+    // at all. This is the difference between being able to replace a bespoke
+    // script and not.
+
+    case 'cookies': {
+      const session = await sessionFor(ctx, args);
+      const cookies = await getCookies(session.page.context(), args.url);
+      if (cookies.length === 0) return 'no cookies set for this context';
+      const lines = [`cookies (${cookies.length}):`];
+      for (const cookie of cookies) {
+        // Values are secrets; length is enough to confirm a set worked.
+        lines.push(`  ${cookie.name}=<${cookie.value.length} chars>  ${cookie.domain ?? ''}${cookie.path ?? ''}`);
+      }
+      return join(lines);
+    }
+
+    case 'setCookies': {
+      if (!args.cookies) {
+        throw new FbaError('INVALID_ARGUMENT', 'setCookies needs {cookies}', {
+          hint: 'a "a=1; b=2" string, a {name: value} map, or full cookie objects — plus {url} to scope them',
+        });
+      }
+      const session = await sessionFor(ctx, args);
+      const applied = await setCookies(
+        session.page.context(),
+        args.cookies as CookieInput,
+        args.url ?? originOfUrl(sessionUrl(session)),
+      );
+      return join([
+        `set ${applied.length} cookie(s): ${applied.map((c) => c.name).join(', ')}`,
+        'reload the page (browser_act [{do:"reload"}]) for the app to pick them up',
+      ]);
+    }
+
+    case 'storage': {
+      const session = await sessionFor(ctx, args);
+      const storage = await getStorage(session.page);
+      const keys = (record: Record<string, string>): string =>
+        Object.keys(record).length === 0 ? '(empty)' : Object.keys(record).join(', ');
+      return join([
+        `origin: ${originOfUrl(sessionUrl(session)) ?? 'unknown'}`,
+        `localStorage (${Object.keys(storage.local).length}): ${keys(storage.local)}`,
+        `sessionStorage (${Object.keys(storage.session).length}): ${keys(storage.session)}`,
+      ]);
+    }
+
+    case 'setStorage': {
+      if (!args.local && !args.session) {
+        throw new FbaError('INVALID_ARGUMENT', 'setStorage needs {local} and/or {session}');
+      }
+      const session = await sessionFor(ctx, args);
+      const written = await setStorage(session.page, {
+        ...(args.local ? { local: args.local } : {}),
+        ...(args.session ? { session: args.session } : {}),
+      });
+      return `wrote ${written.local} localStorage and ${written.session} sessionStorage entries for ${originOfUrl(sessionUrl(session)) ?? 'this origin'}`;
+    }
+
+    case 'exportState': {
+      const session = await sessionFor(ctx, args);
+      const state = await exportState(session.page.context(), args.path);
+      const originCount = state.origins?.length ?? 0;
+      return args.path
+        ? `wrote storage state to ${args.path} (${state.cookies?.length ?? 0} cookies, ${originCount} origins)`
+        : join([
+            `storage state: ${state.cookies?.length ?? 0} cookies, ${originCount} origins`,
+            'pass {path} to write it to a file',
+          ]);
+    }
+
+    case 'importState': {
+      if (!args.path && !args.state) {
+        throw new FbaError('INVALID_ARGUMENT', 'importState needs {path} or {state}');
+      }
+      const session = await sessionFor(ctx, args);
+      const state = args.path ? await readStateFile(args.path) : (args.state as StorageState);
+      const result = await importState(session.page.context(), session.page, state);
+      const lines = [`restored ${result.cookies} cookie(s)`];
+      if (result.origins.length > 0) lines.push(`localStorage restored for: ${result.origins.join(', ')}`);
+      if (result.skipped.length > 0) {
+        lines.push(
+          `skipped localStorage for ${result.skipped.join(', ')} — open that origin first, then importState again`,
+        );
+      }
+      lines.push('reload the page for the app to pick the session up');
       return join(lines);
     }
 

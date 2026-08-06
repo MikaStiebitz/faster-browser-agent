@@ -19,5 +19,5 @@
     "testing",
     "mcp"
   ],
-  "mcpServers": "./.mcp.json"
+  "mcpServers": "./.claude-plugin/mcp.json"
 }

@@ -138,6 +138,21 @@ cross-talk. Working in a worktree is automatically isolated.
 - `browser_session {action: "warm"}` — pre-launch the browser so the first real call
   doesn't pay cold-start
 
+## Logging in without a login UI
+
+Many internal tools sit behind SSO or MFA that an agent cannot drive. Inject the session
+an operator already has instead:
+
+```
+browser_session { action: "setCookies", url: "https://app.example.com",
+                  cookies: "PHPSESSID=abc; clientid=42" }   → paste a devtools Cookie header
+browser_act     { steps: [{ do: "reload" }] }               → the app picks it up
+browser_session { action: "importState", path: "state.json" } → a Playwright storageState file
+```
+
+`cookies` also takes a `{name: value}` map or full cookie objects. `setStorage` does the
+same for localStorage/sessionStorage. Always reload after injecting.
+
 ## Network control
 
 `browser_net` bends the network at runtime — no backend changes, no login UIs:

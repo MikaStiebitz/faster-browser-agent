@@ -10,7 +10,7 @@ its own browser identity.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520.10-339933?logo=node.js&logoColor=white)](package.json)
-[![Tests](https://img.shields.io/badge/tests-295%20passing-brightgreen)](test/)
+[![Tests](https://img.shields.io/badge/tests-307%20passing-brightgreen)](test/)
 [![MCP](https://img.shields.io/badge/MCP-11%20coarse%20tools-8b5cf6)](src/mcp/tools.ts)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -102,7 +102,7 @@ tabs, collapsed accordions, a 40-row table and a modal. Reproduce with
 | Fill a 30-field settings form | ~30 model calls | **1 call** |
 | Repeat a known flow | full model-driven run | **0 model calls** · 675 ms |
 | Revisit a site | starts blind | answers from memory · 44 % less waiting |
-| Wait after an action | fixed 2 s sleeps | learned settle · 128–316 ms |
+| Wait after an action | fixed 2 s sleeps | settle heuristic · 128–515 ms even on polling apps |
 
 **Browser-side medians** (`fba bench`): warm tab 87 ms · navigate 48 ms ·
 snapshot of 97 controls 13 ms · element screenshot 1 KB.
@@ -123,7 +123,7 @@ itself a latency cost. Eleven coarse tools — `click`, `type`, `press` are
 | `browser_map` | The app map — from source, from memory, or both |
 | `browser_extract` | Structured extraction, or replay an API the page itself called |
 | `browser_skill` | Compile & replay trajectories — **zero model calls** |
-| `browser_session` | Per-workspace state: list, warm, reset, seed logins across worktrees |
+| `browser_session` | Per-workspace state · warm · seed · **inject cookies/storage instead of driving a login UI** |
 | `browser_screenshot` | 📸 Smart-lazy vision — see below |
 | `browser_net` | Mock, block, inject headers, go offline — at runtime |
 
@@ -155,7 +155,21 @@ folded (`… +37 similar`). After the first look, you get diffs:
 ~ e34 status "Saving…" -> "Saved"
 ```
 
-### 3 · Action programs, not single actions
+### 3 · Waiting that survives real apps
+
+`waitForTimeout(2000)` is the most common hidden time sink, so settling is a heuristic —
+but the obvious heuristic is wrong. Requiring DOM *and* network quiet means any app with a
+React Query refetch interval, a session heartbeat or an HMR channel never settles.
+Measured against a real Next.js admin console: **3.3 s per action, 96 % of wall-clock**, on
+a page visibly done in 150 ms.
+
+The rule is **DOM quiet is necessary; network quiet is sufficient but not necessary.** When
+the DOM has been still for a confidence window while traffic continues, it settles and
+reports `dom-stable`. That is safe precisely because a request that *matters* mutates the
+DOM when it lands, resetting the clock — only traffic that changes nothing takes the
+shortcut. Measured on a 120 ms poller: **515 ms instead of a 5 s timeout.**
+
+### 4 · Action programs, not single actions
 
 ```jsonc
 {"steps": [
@@ -173,7 +187,7 @@ text and the step still runs. Ambiguity is never guessed: the error lists the
 candidates. 27 step types including `selectTab`, `expand`, `drag`, `resize`,
 `download`, `clickAt`, `eval`.
 
-### 4 · Smart-lazy screenshots 📸
+### 5 · Smart-lazy screenshots 📸
 
 Text perception is ~20× cheaper, so screenshots are an **escape hatch, not a
 habit** — and the system tells the agent exactly when to reach for one:
@@ -184,7 +198,7 @@ habit** — and the system tells the agent exactly when to reach for one:
   full-page height-capped. An **element clip is ~1 KB**; a viewport ~66 KB.
 - Image coordinates map 1:1 to `clickAt {x, y}` — see it, click it.
 
-### 5 · Runtime network control
+### 6 · Runtime network control
 
 ```jsonc
 browser_net {"action": "mock", "pattern": "/api/users", "body": {"users": []}}   // develop against APIs that don't exist yet
@@ -195,7 +209,7 @@ browser_net {"action": "requests"}                                              
 
 Documents are never mocked or blocked — the page itself always loads.
 
-### 6 · It learns every site it visits
+### 7 · It learns every site it visits
 
 The code index needs your source. For everything else — a vendor admin panel,
 a SaaS dashboard — **site memory** builds the map as a side effect of ordinary
@@ -214,7 +228,7 @@ The wait budget adapts per origin — measured 228 ms → 128 ms median settle
 (navigation and interaction distributions kept separate, silent below 5
 samples). Inspect with `fba sites list|show|forget`.
 
-### 7 · Compiled trajectories
+### 8 · Compiled trajectories
 
 ```jsonc
 browser_act   {"steps": [...], "record": "configure-smtp"}
@@ -224,7 +238,7 @@ browser_skill {"action": "replay", "name": "configure-smtp", "params": {"host": 
 Replay is pure execution — zero model calls, 675 ms measured. Recorded
 `assert` steps double as verifiers: a changed UI fails fast and honestly.
 
-### 8 · Parallel agents, isolated browsers
+### 9 · Parallel agents, isolated browsers
 
 Every git workspace — including **linked worktrees**, detected properly via
 `gitdir`/`commondir` — gets its own Chromium profile: separate cookies,
@@ -234,6 +248,18 @@ inherit a login instead of redoing OAuth:
 
 ```bash
 fba profiles seed --from myapp-a1b2c3d4 --to myapp-e5f6g7h8
+```
+
+Several workers **in one process** should each pass a `sessionKey` (or set
+`FBA_SESSION_KEY`) so they get their own tab instead of silently driving each other's.
+
+And when a tool sits behind SSO or MFA that no agent can drive, inject the session an
+operator already holds rather than automating the login at all:
+
+```jsonc
+browser_session {"action": "setCookies", "url": "https://app.example.com",
+                 "cookies": "PHPSESSID=abc; clientid=42"}    // a devtools Cookie header
+browser_session {"action": "importState", "path": "state.json"}  // a Playwright storageState
 ```
 
 ## 🏗 Architecture
@@ -275,6 +301,7 @@ Precedence: explicit overrides → env → `.fbarc.json` (workspace) → `config
 | `FBA_CHROMIUM_PATH` | auto-detected | Browser executable |
 | `FBA_BASE_URL` | inferred from source | Dev-server origin for deep links |
 | `FBA_SITE_MEMORY` | `true` | Learn pages/controls/timings per origin |
+| `FBA_SESSION_KEY` | unset | Namespace the implicit session lookup for parallel workers |
 | `FBA_BLOCKING` | `true` | Abort images/media/fonts/analytics |
 | `FBA_HEADLESS` | `true` | |
 | `FBA_MAX_NODES` / `FBA_TIMEOUT_MS` / `FBA_LOG_LEVEL` | `300` / `15000` / `warn` | |
@@ -300,8 +327,8 @@ await shutdown();
 - **The code index is regex-based, not a parser.** Fast and framework-agnostic;
   unusual routing setups may be missed. A miss is a *missing* route, never a wrong one.
 - **Site memory needs ~5 samples** per origin before the adaptive settle kicks in.
-- **Settle is a heuristic.** A page polling on a short interval never goes quiet
-  and hits the timeout cap.
+- **Settle is a heuristic.** A page that mutates the DOM on a sub-200 ms interval (a
+  live-updating clock) never goes quiet and hits the timeout cap.
 - **No video/trace recording, no HAR replay.** Test-suite machinery, deliberately out of scope.
 - **A fresh automated Chromium has a fresh fingerprint.** Sites behind aggressive
   bot detection may block it where your everyday browser sails through.
@@ -310,7 +337,7 @@ await shutdown();
 
 ```bash
 npm install && npm run build
-npm test           # 295 tests, including real-browser integration
+npm test           # 307 tests, including real-browser integration
 npm run typecheck  # strict, zero errors
 ```
 

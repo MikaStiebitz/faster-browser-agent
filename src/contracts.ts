@@ -206,6 +206,16 @@ export interface AcquireOptions {
   sessionId?: string;
   /** Open in a fresh tab even if an idle one exists. */
   fresh?: boolean;
+  /**
+   * Namespace for the implicit session lookup.
+   *
+   * Without one, every caller in a workspace shares the most-recently-used tab
+   * — correct for a single agent, actively wrong for several workers in one
+   * process, which would silently drive each other's page. Give each worker its
+   * own key (or set `FBA_SESSION_KEY`) and each gets its own tab in the same
+   * browser context, keeping the shared cookie jar and the warm process.
+   */
+  sessionKey?: string;
 }
 
 export interface BrowserPool {

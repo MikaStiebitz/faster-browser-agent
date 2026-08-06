@@ -28,7 +28,8 @@ const logger = createLogger('config');
 const CONFIG_FILENAMES = ['.fbarc.json', 'fba.config.json', '.fba/config.json'];
 
 export function defaultHome(): string {
-  return process.env.FBA_HOME ? resolve(process.env.FBA_HOME) : join(homedir(), '.faster-browser-agent');
+  const home = envPath('FBA_HOME');
+  return home ? resolve(home) : join(homedir(), '.faster-browser-agent');
 }
 
 export function defaultConfig(): FbaConfig {
@@ -63,6 +64,25 @@ function readJsonFile(path: string): Record<string, unknown> | undefined {
     logger.warn(`ignoring ${path}: ${e instanceof Error ? e.message : String(e)}`);
   }
   return undefined;
+}
+
+/**
+ * Read an env var, ignoring values a host failed to expand.
+ *
+ * MCP configs are templated (`${CLAUDE_PROJECT_DIR}`, `${CLAUDE_PLUGIN_DATA}`),
+ * and a host that does not define one passes the placeholder through verbatim.
+ * Taking it literally is how a 7MB Chromium profile once ended up in a
+ * directory named `${CLAUDE_PLUGIN_DATA}` inside a git repository. Treating an
+ * unexpanded placeholder as "unset" falls back to the correct default instead.
+ */
+function envPath(name: string): string | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return undefined;
+  if (/\$\{[^}]*\}/.test(raw) || /^%\w+%$/.test(raw)) {
+    logger.warn(`ignoring ${name}: "${raw}" looks like an unexpanded placeholder`);
+    return undefined;
+  }
+  return raw;
 }
 
 function envBool(name: string): boolean | undefined {
@@ -123,7 +143,7 @@ export function loadConfig(options: LoadConfigOptions = {}): FbaConfig {
   assign(config, readJsonFile(join(config.home, 'config.json')) as Partial<FbaConfig>);
 
   // (3) workspace config
-  const workspace = options.workspace ?? options.overrides?.workspace ?? process.env.FBA_WORKSPACE;
+  const workspace = options.workspace ?? options.overrides?.workspace ?? envPath('FBA_WORKSPACE');
   if (workspace) {
     for (const name of CONFIG_FILENAMES) {
       const found = readJsonFile(join(workspace, name));
@@ -139,10 +159,10 @@ export function loadConfig(options: LoadConfigOptions = {}): FbaConfig {
 
   // (2) environment
   assign(config, {
-    home: process.env.FBA_HOME ? resolve(process.env.FBA_HOME) : undefined,
-    workspace: process.env.FBA_WORKSPACE ? resolve(process.env.FBA_WORKSPACE) : config.workspace,
+    home: envPath('FBA_HOME') ? resolve(envPath('FBA_HOME')!) : undefined,
+    workspace: envPath('FBA_WORKSPACE') ? resolve(envPath('FBA_WORKSPACE')!) : config.workspace,
     headless: envBool('FBA_HEADLESS'),
-    executablePath: process.env.FBA_CHROMIUM_PATH || process.env.FBA_EXECUTABLE_PATH,
+    executablePath: envPath('FBA_CHROMIUM_PATH') ?? envPath('FBA_EXECUTABLE_PATH'),
     browserArgs: envList('FBA_BROWSER_ARGS'),
     timeoutMs: envInt('FBA_TIMEOUT_MS'),
     idleTimeoutMs: envInt('FBA_IDLE_TIMEOUT_MS'),
@@ -151,7 +171,7 @@ export function loadConfig(options: LoadConfigOptions = {}): FbaConfig {
     skills: envBool('FBA_SKILLS'),
     siteMemory: envBool('FBA_SITE_MEMORY'),
     networkObserver: envBool('FBA_NETWORK_OBSERVER'),
-    baseUrl: process.env.FBA_BASE_URL,
+    baseUrl: envPath('FBA_BASE_URL'),
     locale: process.env.FBA_LOCALE,
     timezone: process.env.FBA_TIMEZONE,
     userAgent: process.env.FBA_USER_AGENT,

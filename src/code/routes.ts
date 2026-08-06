@@ -760,6 +760,39 @@ const FRAMEWORK_PORTS: Record<UiFramework, number> = {
 };
 
 const SCRIPT_PORT_RE = /(?:--port[= ]|(?<![\w-])-p[= ]|\bPORT=)(\d{2,5})/;
+
+/**
+ * Split a package script into the individual commands it launches.
+ *
+ * Covers `&&`, `||`, `&`, `;` and the quoted arguments of `concurrently` /
+ * `npm-run-all`, which is how multi-process dev scripts are actually written.
+ */
+function splitCommands(script: string): string[] {
+  const quoted = script.match(/"[^"]+"|'[^']+'/g) ?? [];
+  const bare = script.split(/&&|\|\||[;&]/);
+  return [...bare, ...quoted.map((q) => q.slice(1, -1))].map((part) => part.trim()).filter(Boolean);
+}
+
+/** Dev commands whose presence identifies which framework a segment starts. */
+const COMMAND_FRAMEWORKS: Array<{ re: RegExp; framework: UiFramework }> = [
+  { re: /(^|[\s/])next\s+(dev|start)\b/, framework: 'next-app' },
+  { re: /(^|[\s/])(vite|svelte-kit)\b/, framework: 'sveltekit' },
+  { re: /(^|[\s/])nuxt\s+(dev|start)\b/, framework: 'nuxt' },
+  { re: /(^|[\s/])astro\s+dev\b/, framework: 'astro' },
+  { re: /(^|[\s/])remix\s+(dev|vite:dev)\b/, framework: 'remix' },
+  { re: /(^|[\s/])ng\s+serve\b/, framework: 'angular' },
+  { re: /manage\.py\s+runserver\b/, framework: 'django' },
+  { re: /(^|[\s/])rails\s+(s|server)\b/, framework: 'rails' },
+  { re: /(^|[\s/])(uvicorn|fastapi)\b/, framework: 'fastapi' },
+  { re: /(^|[\s/])flask\s+run\b/, framework: 'flask' },
+];
+
+function frameworkOfCommand(segment: string): UiFramework | undefined {
+  for (const entry of COMMAND_FRAMEWORKS) {
+    if (entry.re.test(segment)) return entry.framework;
+  }
+  return undefined;
+}
 const CONFIG_PORT_RE = /\bport\s*[:=]\s*(?:Number\()?\s*['"]?(\d{2,5})/;
 const ENV_URL_RE = /^\s*(?:export\s+)?(?:NEXT_PUBLIC_SITE_URL|NEXT_PUBLIC_BASE_URL|PUBLIC_BASE_URL|VITE_BASE_URL|BASE_URL|APP_URL|SITE_URL)\s*=\s*["']?(https?:\/\/[^\s"']+)/m;
 const ENV_PORT_RE = /^\s*(?:export\s+)?(?:PORT|VITE_PORT|APP_PORT|SERVER_PORT|DEV_PORT)\s*=\s*["']?(\d{2,5})/m;
@@ -785,16 +818,38 @@ export function detectBaseUrl(
   const abs = resolve(root);
   const pkg = packageJson ?? readPackageJson(abs);
 
+  const frameworks = detectFrameworks(abs, files ?? [], pkg);
+
   // 1. dev/start scripts — the command the developer actually runs.
+  //
+  // A port must be attributed to the *command it belongs to*. A dev script
+  // routinely launches several processes (`concurrently`, `&&`, `&`), and
+  // taking the first port in the string picks whichever unrelated sidecar
+  // happens to be listed first — a docs server, a mock API, an editor daemon.
+  // Observed in the wild: `opencode serve --port 7800` shadowed a `next dev`
+  // that had no explicit port at all, so every deep link went to the wrong
+  // process.
   const scripts = pkg?.['scripts'];
   if (scripts && typeof scripts === 'object') {
     const table = scripts as Record<string, unknown>;
+    let fallbackPort: string | undefined;
     for (const name of ['dev', 'start', 'serve', 'dev:web', 'start:dev']) {
       const value = table[name];
       if (typeof value !== 'string') continue;
-      const m = SCRIPT_PORT_RE.exec(value);
-      if (m && m[1]) return `http://localhost:${m[1]}`;
+      for (const segment of splitCommands(value)) {
+        const port = SCRIPT_PORT_RE.exec(segment)?.[1];
+        const framework = frameworkOfCommand(segment);
+        // A port stated next to the framework's own dev command is the
+        // strongest signal there is.
+        if (framework && port) return `http://localhost:${port}`;
+        // The framework's command without a port means its default, which
+        // still beats a port belonging to some other process.
+        if (framework) return `http://localhost:${FRAMEWORK_PORTS[framework]}`;
+        if (port && !fallbackPort) fallbackPort = port;
+      }
     }
+    if (fallbackPort && frameworks.length === 0) return `http://localhost:${fallbackPort}`;
+    if (fallbackPort && frameworks.every((f) => f === 'unknown')) return `http://localhost:${fallbackPort}`;
   }
 
   // 2. bundler / framework config.
@@ -824,7 +879,6 @@ export function detectBaseUrl(
   }
 
   // 5. framework default.
-  const frameworks = detectFrameworks(abs, files ?? [], pkg);
   for (const framework of frameworks) {
     if (framework === 'unknown') continue;
     return `http://localhost:${FRAMEWORK_PORTS[framework]}`;

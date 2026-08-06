@@ -292,7 +292,18 @@ export const DEFAULT_SETTLE_OPTIONS: Required<SettleOptions> = {
 
 export interface SettleResult {
   settled: boolean;
-  reason: 'quiet' | 'timeout' | 'navigated' | 'detached';
+  /**
+   * `quiet`      — DOM and network both went still. The clean case.
+   * `dom-stable` — the DOM stopped changing while background traffic continued.
+   *                Apps that poll (React Query refetch intervals, session
+   *                heartbeats, SSE) never reach network quiet, so treating it
+   *                as necessary means burning the entire timeout on every
+   *                single action. See `settleVerdict` in the page runtime.
+   * `timeout`    — neither condition held within the budget.
+   * `navigated`  — the document changed under us mid-wait.
+   * `detached`   — the page went away.
+   */
+  reason: 'quiet' | 'dom-stable' | 'timeout' | 'navigated' | 'detached';
   waitedMs: number;
   /** Requests still in flight when we gave up, for diagnostics. */
   pendingRequests?: number;
