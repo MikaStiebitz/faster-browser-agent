@@ -1,11 +1,17 @@
-# This workflow will run tests using node and then publish a package to GitHub Packages when a release is created
-# For more information see: https://docs.github.com/en/actions/publishing-packages/publishing-nodejs-packages
-
-name: Node.js Package
+# Publishes to npmjs.org (as the unscoped "faster-browser-agent") both on a
+# manually created GitHub Release and automatically whenever package.json's
+# version changes on main — a push to main covers a PR merge too, since a
+# merge produces a push event. The version check makes the two triggers safe
+# to keep side by side: whichever fires first publishes, the other sees the
+# version already published and skips instead of failing.
+name: Publish to npm
 
 on:
   release:
     types: [created]
+  push:
+    branches: [main]
+    paths: ['package.json']
 
 jobs:
   build:
@@ -16,8 +22,8 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
-      # The suite includes real-browser integration tests; a bare runner has no
-      # Chromium, so `npm test` fails without this.
+      # The suite includes real-browser integration tests; a bare runner has
+      # no Chromium, so `npm test` fails without this.
       - run: npx playwright-core install --with-deps chromium
       - run: npm test
 
@@ -31,6 +37,15 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org/
       - run: npm ci
-      - run: npm publish
+      - name: Publish only if the version actually changed
         env:
           NODE_AUTH_TOKEN: ${{secrets.npm_token}}
+        run: |
+          LOCAL_VERSION="$(node -p "require('./package.json').version")"
+          PUBLISHED_VERSION="$(npm view faster-browser-agent version 2>/dev/null || true)"
+          echo "local: $LOCAL_VERSION — published: ${PUBLISHED_VERSION:-<none>}"
+          if [ "$LOCAL_VERSION" = "$PUBLISHED_VERSION" ]; then
+            echo "version unchanged, skipping publish"
+          else
+            npm publish
+          fi
