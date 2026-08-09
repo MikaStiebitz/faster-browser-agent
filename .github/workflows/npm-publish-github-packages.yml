@@ -10,12 +10,16 @@
 # second, GitHub-Packages-only name under the owner's scope; the rename below
 # only touches the ephemeral checkout on the runner, never the committed
 # package.json.
+# workflow_dispatch is a manual escape hatch: it goes through the Actions API
+# directly rather than the repo's check-suite auto-trigger path, so it still
+# works even if that path is misbehaving for push events.
 name: Publish to GitHub Packages
 
 on:
   push:
     branches: [main]
     paths: ['package.json']
+  workflow_dispatch: {}
 
 jobs:
   build:

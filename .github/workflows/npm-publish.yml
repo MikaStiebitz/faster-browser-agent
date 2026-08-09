@@ -4,6 +4,10 @@
 # merge produces a push event. The version check makes the two triggers safe
 # to keep side by side: whichever fires first publishes, the other sees the
 # version already published and skips instead of failing.
+#
+# workflow_dispatch is a manual escape hatch: it goes through the Actions API
+# directly rather than the repo's check-suite auto-trigger path, so it still
+# works even if that path is misbehaving for push events.
 name: Publish to npm
 
 on:
@@ -12,6 +16,7 @@ on:
   push:
     branches: [main]
     paths: ['package.json']
+  workflow_dispatch: {}
 
 jobs:
   build:
