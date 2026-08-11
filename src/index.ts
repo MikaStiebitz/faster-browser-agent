@@ -50,9 +50,35 @@ export {
   type BlockingHandle,
 } from './browser/blocking.js';
 
+// Session injection. An embedded integration needs these before it can browse
+// anything real, so they belong on the public surface, not only behind the MCP
+// `browser_session` tool.
+export {
+  clearCookies,
+  exportState,
+  getCookies,
+  getStorage,
+  importState,
+  normalizeCookies,
+  readStateFile,
+  setCookies,
+  setStorage,
+  type CookieInput,
+  type CookieSpec,
+  type StorageSnapshot,
+  type StorageState,
+} from './browser/state.js';
+
 // --- L1: perception --------------------------------------------------------
 
 export { PAGE_RUNTIME_SOURCE, RUNTIME_VERSION } from './runtime/index.js';
+
+export {
+  capture,
+  describeCapture,
+  type CaptureOptions,
+  type CaptureResult,
+} from './browser/capture.js';
 
 // --- L3: what the agent learns by browsing ---------------------------------
 
@@ -94,6 +120,15 @@ export {
 } from './net/observer.js';
 
 // --- L2: acting ------------------------------------------------------------
+
+// Mocking, blocking and going offline are things the agent does *to* the page,
+// which is why they sit here rather than beside the observer above.
+export {
+  NetControl,
+  patternMatches,
+  type BlockRule,
+  type MockRule,
+} from './net/control.js';
 
 export * from './executor/index.js';
 

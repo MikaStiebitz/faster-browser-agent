@@ -325,6 +325,20 @@ const observation = await session.observe();   // compact tree or diff
 await shutdown();
 ```
 
+Everything the tools do is on the public surface — including session injection,
+which an embedded integration usually needs before it can browse anything real:
+
+```ts
+import { setCookies, importState, readStateFile } from 'faster-browser-agent';
+
+// A raw Cookie header, a { name: value } map, or Playwright cookie objects.
+await setCookies(session.page.context(), 'PHPSESSID=abc; clientid=42', baseUrl);
+
+// Or reuse a storageState file written by Playwright or by `browser_session`.
+const state = await readStateFile('./state.json');
+await importState(session.page.context(), session.page, state);
+```
+
 ## ⚠️ Honest limitations
 
 - **Chromium only.** Firefox/WebKit are not wired up.
