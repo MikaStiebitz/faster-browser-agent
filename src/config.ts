@@ -48,6 +48,7 @@ export function defaultConfig(): FbaConfig {
     skills: true,
     siteMemory: true,
     networkObserver: true,
+    captureRequests: false,
     logLevel: 'warn',
   };
 }
@@ -171,6 +172,7 @@ export function loadConfig(options: LoadConfigOptions = {}): FbaConfig {
     skills: envBool('FBA_SKILLS'),
     siteMemory: envBool('FBA_SITE_MEMORY'),
     networkObserver: envBool('FBA_NETWORK_OBSERVER'),
+    captureRequests: envBool('FBA_CAPTURE_REQUESTS'),
     baseUrl: envPath('FBA_BASE_URL'),
     locale: process.env.FBA_LOCALE,
     timezone: process.env.FBA_TIMEZONE,

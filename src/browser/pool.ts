@@ -125,6 +125,7 @@ export class DefaultBrowserPool implements BrowserPool {
     }
     const session = await this.openSession(entry, options.fresh === true);
     entry.sessionKeys.set(session.id, key);
+    if (options.label) session.label = options.label;
     return session;
   }
 

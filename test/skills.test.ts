@@ -429,6 +429,7 @@ function fakeSession(url: string): Session {
       createdAt: 0,
       lastUsedAt: 0,
       version: 1,
+      busy: false,
     }),
     goto: async () => undefined,
     snapshot: async () => snapshot,

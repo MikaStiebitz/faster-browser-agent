@@ -1,6 +1,6 @@
 {
   "name": "faster-browser-agent",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A code-aware, token-efficient browser automation MCP server for AI agents. Deep-links instead of clicking, compresses perception, caches trajectories, and isolates browser state per git workspace.",
   "type": "module",
   "license": "MIT",
@@ -29,6 +29,10 @@
     "./mcp": {
       "types": "./dist/mcp/server.d.ts",
       "default": "./dist/mcp/server.js"
+    },
+    "./mcp/tools": {
+      "types": "./dist/mcp/tools.d.ts",
+      "default": "./dist/mcp/tools.js"
     }
   },
   "files": [

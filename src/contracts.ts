@@ -150,6 +150,14 @@ export interface Session {
 
   info(): SessionInfo;
 
+  /**
+   * Mark the session as actively driven until the returned function is called.
+   *
+   * Optional so an implementation that does not track activity still satisfies
+   * the contract; callers use `session.markBusy?.()`.
+   */
+  markBusy?(): () => void;
+
   /** Navigate, re-inject the runtime and reset ref generation. */
   goto(url: string, options?: GotoOptions): Promise<void>;
 
@@ -216,6 +224,8 @@ export interface AcquireOptions {
    * browser context, keeping the shared cookie jar and the warm process.
    */
   sessionKey?: string;
+  /** Human-readable name for this session, surfaced on `SessionInfo`. */
+  label?: string;
 }
 
 export interface BrowserPool {

@@ -198,18 +198,34 @@ export class DefaultExecutor implements Executor {
     let aborted = false;
     let timedOut = false;
 
+    // Single funnel for every outcome, so `onStep` cannot be forgotten at one
+    // of the four places a result is produced.
+    const record = (result: StepResult): void => {
+      results.push(result);
+      if (!options.onStep) return;
+      try {
+        options.onStep(result, result.index, steps.length);
+      } catch (e) {
+        // An observer must never fail the program it is watching.
+        logger.debug(`onStep callback threw: ${errorMessage(e)}`);
+      }
+    };
+
+    const releaseBusy = session.markBusy?.();
+
+    try {
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       if (!step) continue;
       const stepStarted = Date.now();
 
       if (aborted) {
-        results.push({ index: i, step: step.do, status: 'skipped', detail: 'aborted after an earlier failure', ms: 0 });
+        record({ index: i, step: step.do, status: 'skipped', detail: 'aborted after an earlier failure', ms: 0 });
         continue;
       }
       if (stepStarted >= deadline) {
         timedOut = true;
-        results.push({ index: i, step: step.do, status: 'skipped', detail: 'program budget exhausted', ms: 0 });
+        record({ index: i, step: step.do, status: 'skipped', detail: 'program budget exhausted', ms: 0 });
         continue;
       }
 
@@ -268,7 +284,7 @@ export class DefaultExecutor implements Executor {
 
       if (error) {
         failedAt ??= i;
-        results.push({
+        record({
           index: i,
           step: step.do,
           status: 'failed',
@@ -291,7 +307,7 @@ export class DefaultExecutor implements Executor {
             ? 'healed'
             : 'ok';
 
-      results.push({
+      record({
         index: i,
         step: step.do,
         status,
@@ -306,6 +322,12 @@ export class DefaultExecutor implements Executor {
 
     if (options.settle !== false) {
       await safeSettle(session, options.settle ?? session.config.settle);
+    }
+    } finally {
+      // Released before the closing observation: the program is done acting,
+      // and a host showing "busy" through the final snapshot would misreport a
+      // session that is only being read.
+      releaseBusy?.();
     }
 
     if (timedOut) {
@@ -1053,8 +1075,20 @@ async function readChecked(locator: Locator, timeout: number): Promise<boolean |
   }
 }
 
+/**
+ * A one-line "what was this step aiming at", for failure detail lines.
+ *
+ * A `target` is the common case but not the only one: `waitFor` and `assert`
+ * can be driven purely by `text` or `urlContains`, and describing only targets
+ * produced `"waitFor  failed"` — two spaces and no information — for exactly
+ * the steps whose failure is hardest to diagnose.
+ */
 function describeStep(step: ActionStep): string {
-  return 'target' in step && step.target ? describeTarget(step.target) : '';
+  if ('target' in step && step.target) return describeTarget(step.target);
+  if ('urlContains' in step && step.urlContains) return `url containing "${step.urlContains}"`;
+  if ('text' in step && step.text) return `text "${truncate(normalizeText(step.text), 60)}"`;
+  if (step.do === 'selectTab') return step.path.join(' > ');
+  return '';
 }
 
 function summarize(results: StepResult[]): string {

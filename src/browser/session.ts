@@ -109,6 +109,13 @@ export class PageSession implements Session {
   private lastUsedAt = Date.now();
   private version = 0;
   private lastTitle = '';
+  /** Caller-supplied name; hosts driving several sessions show this. */
+  label?: string;
+  /**
+   * Depth, not a flag, so nested marks (an executor program that contains a
+   * goto that contains a settle) release correctly.
+   */
+  private busyDepth = 0;
   private last: PageSnapshot | undefined;
   /** Snapshot the next diff is computed against; only `observe()` moves it. */
   private diffBaseline: PageSnapshot | undefined;
@@ -132,7 +139,9 @@ export class PageSession implements Session {
     sessionCounter += 1;
     this.id = `s${sessionCounter}`;
 
-    this.observer = deps.config.networkObserver ? new NetworkObserver(page) : undefined;
+    this.observer = deps.config.networkObserver
+      ? new NetworkObserver(page, { captureRequests: deps.config.captureRequests })
+      : undefined;
 
     page.on('request', this.onRequest);
     page.on('requestfinished', this.onRequestSettled);
@@ -178,6 +187,25 @@ export class PageSession implements Session {
       createdAt: this.createdAt,
       lastUsedAt: this.lastUsedAt,
       version: this.version,
+      ...(this.label ? { label: this.label } : {}),
+      busy: this.busyDepth > 0,
+    };
+  }
+
+  /**
+   * Mark the session as actively driven until the returned function is called.
+   *
+   * Idempotent per handle: releasing twice does not underflow the depth, which
+   * matters because callers release in a `finally` that can run after an early
+   * return has already released.
+   */
+  markBusy(): () => void {
+    this.busyDepth += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.busyDepth = Math.max(0, this.busyDepth - 1);
     };
   }
 

@@ -22,6 +22,8 @@ import { DefaultExecutor } from '../executor/act.js';
 import { DefaultSkillRunner } from '../skills/runner.js';
 import { FsSkillStore } from '../skills/store.js';
 import type { FbaConfig } from '../types.js';
+import { createRequire } from 'node:module';
+
 import { errorMessage } from '../util/errors.js';
 import { createLogger, setLogLevel } from '../util/logger.js';
 import { FsSiteMemoryStore } from '../site/memory.js';
@@ -30,7 +32,23 @@ import { createTools, resolveNavigation, type ToolContext } from './tools.js';
 const logger = createLogger('mcp:server');
 
 const SERVER_NAME = 'faster-browser-agent';
-const SERVER_VERSION = '0.1.0';
+
+/**
+ * Read from package.json rather than a literal.
+ *
+ * Hardcoding it meant the MCP handshake reported 0.1.0 while the package was
+ * on 0.3.0 — two minors stale, and wrong in the one place a client would
+ * feature-detect or a bug report would quote. `../../package.json` resolves to
+ * the package root from both `src/mcp/` and `dist/mcp/`.
+ */
+const SERVER_VERSION: string = ((): string => {
+  try {
+    const require_ = createRequire(import.meta.url);
+    return (require_('../../package.json') as { version?: string }).version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 export interface ServerHandle {
   server: McpServer;

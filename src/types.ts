@@ -468,6 +468,19 @@ export interface ActOptions {
   timeoutMs?: number;
   /** Record this program into the skill cache under this name. */
   record?: string;
+  /**
+   * Called after each step, before the next one starts.
+   *
+   * `act` deliberately batches many steps into one call so the model does not
+   * pay a round trip per click — which also means the call resolves atomically
+   * and a host watching from outside cannot tell step 2 of 5 from a hang.
+   * Steps that leave no page-level trace (`scroll`, a failed `waitFor`) are
+   * invisible without this.
+   *
+   * Throwing from the callback is contained: a broken observer must not fail
+   * the program it is watching.
+   */
+  onStep?: (result: StepResult, index: number, total: number) => void;
 }
 
 export interface ActResult {
@@ -590,6 +603,16 @@ export interface SessionInfo {
   lastUsedAt: number;
   /** Snapshot version at last observation. */
   version: number;
+  /** Caller-supplied name, for hosts that show several sessions at once. */
+  label?: string;
+  /**
+   * True while the session is being driven.
+   *
+   * `lastUsedAt` cannot answer this: it is stamped when work *starts*, so a
+   * session sitting in a four-second settle looks identical to an idle one —
+   * which is exactly when a host's activity indicator matters most.
+   */
+  busy: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -885,6 +908,18 @@ export interface ObservedEndpoint {
   responseShape?: string;
   requestBodyShape?: string;
   lastSeenAt: number;
+  /**
+   * What a replay of this call actually needs — the shape fields above are
+   * type sketches, not values, so a request promoted from them is a stub.
+   *
+   * Only populated when `FbaConfig.captureRequests` is on, because these
+   * routinely carry an `Authorization` header or a session cookie. Sensitive
+   * header names are redacted to `<redacted>` even then; see `REDACTED_HEADERS`
+   * in `net/observer.ts`.
+   */
+  requestHeaders?: Array<[string, string]>;
+  requestBody?: { text: string; truncated: boolean };
+  requestContentType?: string;
 }
 
 /**
@@ -1058,6 +1093,15 @@ export interface FbaConfig {
   siteMemory: boolean;
   /** Enable network endpoint observation. */
   networkObserver: boolean;
+  /**
+   * Capture request headers and bodies onto `ObservedEndpoint`, so an observed
+   * call can be promoted into a replayable request.
+   *
+   * Off by default: this is the difference between recording that a call
+   * happened and recording the credential it carried. Sensitive headers are
+   * redacted even when it is on, but a caller should have to ask.
+   */
+  captureRequests: boolean;
   /** Dev server base URL override. */
   baseUrl?: string;
   logLevel: LogLevel;
