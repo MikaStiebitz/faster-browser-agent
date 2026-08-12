@@ -1,0 +1,87 @@
+# Automatically tags and releases whenever package.json's version on main
+# changes — a push to main covers a PR merge too, since a merge produces a
+# push event. Triggered on every push to main (not just on package.json
+# changes) so it also catches version bumps folded into a larger commit or
+# merge; the version-vs-existing-tag check makes repeat pushes with no
+# version bump a safe no-op instead of a duplicate tag/release.
+#
+# The release body is a changelog auto-generated from the non-merge commit
+# subjects since the previous vX.Y.Z tag (or the full history for the first
+# release).
+#
+# workflow_dispatch is a manual escape hatch: it goes through the Actions API
+# directly rather than the repo's push-trigger path, so it still works even
+# if that path is misbehaving.
+name: Auto Tag Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Mirrors the serialisation used by the npm-publish workflows: two overlapping
+# runs would both see "tag not created yet" and race to create it, so only
+# one run for this ref should proceed at a time.
+concurrency:
+  group: auto-tag-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version and tag
+        id: version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this version was already tagged
+        id: check
+        run: |
+          if git ls-remote --tags origin | grep -qE "refs/tags/${{ steps.version.outputs.tag }}$"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.version.outputs.tag }} already exists, skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build changelog since previous tag
+        if: steps.check.outputs.exists == 'false'
+        id: changelog
+        run: |
+          PREV_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          if [ -n "$PREV_TAG" ]; then
+            echo "previous tag: $PREV_TAG"
+            RANGE="$PREV_TAG..HEAD"
+          else
+            echo "no previous tag, using full history"
+            RANGE="HEAD"
+          fi
+
+          {
+            echo "changelog<<CHANGELOG_EOF"
+            echo "## What's Changed"
+            echo ""
+            git log "$RANGE" --no-merges --pretty=format:'- %s (%h)'
+            echo ""
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create tag and GitHub release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes "${{ steps.changelog.outputs.changelog }}" \
+            --target "${{ github.sha }}"
