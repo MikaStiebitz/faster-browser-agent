@@ -18,6 +18,17 @@ on:
     paths: ['package.json']
   workflow_dispatch: {}
 
+# Three triggers can fire for one version, and the version check below is
+# check-then-act: two runs that overlap both read "not published yet" and both
+# try, so the loser dies on E403. Serialising them means the second run sees the
+# first one's publish and skips cleanly.
+#
+# cancel-in-progress stays false deliberately — killing a run mid-publish is
+# worse than waiting for it.
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -51,6 +62,23 @@ jobs:
           echo "local: $LOCAL_VERSION — published: ${PUBLISHED_VERSION:-<none>}"
           if [ "$LOCAL_VERSION" = "$PUBLISHED_VERSION" ]; then
             echo "version unchanged, skipping publish"
-          else
-            npm publish
+            exit 0
+          fi
+
+          # The concurrency group above already serialises the common case. This
+          # is the backstop for what it cannot cover — a re-run of an old run, or
+          # the registry lagging behind its own write. Publishing a version that
+          # already exists is the outcome we wanted, not a failure.
+          set +e
+          OUTPUT="$(npm publish 2>&1)"
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+
+          if [ $STATUS -ne 0 ]; then
+            if echo "$OUTPUT" | grep -qi "cannot publish over the previously published version"; then
+              echo "$LOCAL_VERSION was already published by a concurrent run — treating as success"
+            else
+              exit $STATUS
+            fi
           fi

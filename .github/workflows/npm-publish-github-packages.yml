@@ -21,6 +21,13 @@ on:
     paths: ['package.json']
   workflow_dispatch: {}
 
+# See npm-publish.yml for the reasoning. This workflow only won the same race by
+# luck of timing once; it has the same check-then-act gate and needs the same
+# serialisation.
+concurrency:
+  group: publish-gpr-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -61,6 +68,21 @@ jobs:
           echo "local: $LOCAL_VERSION — published: ${PUBLISHED_VERSION:-<none>}"
           if [ "$LOCAL_VERSION" = "$PUBLISHED_VERSION" ]; then
             echo "version unchanged, skipping publish"
-          else
-            npm publish
+            exit 0
+          fi
+
+          # Backstop for what the concurrency group cannot cover — see the same
+          # step in npm-publish.yml.
+          set +e
+          OUTPUT="$(npm publish 2>&1)"
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+
+          if [ $STATUS -ne 0 ]; then
+            if echo "$OUTPUT" | grep -qiE "cannot publish over the previously published version|already exists"; then
+              echo "$LOCAL_VERSION was already published by a concurrent run — treating as success"
+            else
+              exit $STATUS
+            fi
           fi
