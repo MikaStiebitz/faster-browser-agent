@@ -1,32 +1,29 @@
-# Publishes to npmjs.org (as the unscoped "faster-browser-agent") both on a
-# manually created GitHub Release and automatically whenever package.json's
-# version changes on main — a push to main covers a PR merge too, since a
-# merge produces a push event. The version check makes the two triggers safe
-# to keep side by side: whichever fires first publishes, the other sees the
-# version already published and skips instead of failing.
+# Publishes to npmjs.org as the unscoped "faster-browser-agent".
 #
-# workflow_dispatch is a manual escape hatch: it goes through the Actions API
-# directly rather than the repo's check-suite auto-trigger path, so it still
-# works even if that path is misbehaving for push events.
+# This workflow no longer decides *when* to publish. auto-tag-release.yml owns
+# that: it detects the version bump, creates the tag and release, and only then
+# calls this workflow. That ordering is the point — a published version that has
+# no tag behind it is a version nobody can find the source for.
+#
+# It is reached two ways and no others:
+#   workflow_call     — from auto-tag-release, after the tag exists
+#   workflow_dispatch — manual escape hatch, e.g. to re-publish after a
+#                       registry outage
+#
+# The former `release: [created]` trigger was removed as dead code: the release
+# is created with GITHUB_TOKEN, and GitHub deliberately does not start workflow
+# runs from events raised by that token, so it could never have fired.
 name: Publish to npm
 
 on:
-  release:
-    types: [created]
-  push:
-    branches: [main]
-    paths: ['package.json']
+  workflow_call: {}
   workflow_dispatch: {}
 
-# Three triggers can fire for one version, and the version check below is
-# check-then-act: two runs that overlap both read "not published yet" and both
-# try, so the loser dies on E403. Serialising them means the second run sees the
-# first one's publish and skips cleanly.
-#
-# cancel-in-progress stays false deliberately — killing a run mid-publish is
-# worse than waiting for it.
+# Constant, not keyed on github.ref: publishing a package is a global mutex and
+# the ref that triggered it is irrelevant. cancel-in-progress stays false —
+# killing a run mid-publish is worse than queueing behind it.
 concurrency:
-  group: publish-npm-${{ github.ref }}
+  group: publish-npm
   cancel-in-progress: false
 
 jobs:
@@ -65,10 +62,10 @@ jobs:
             exit 0
           fi
 
-          # The concurrency group above already serialises the common case. This
-          # is the backstop for what it cannot cover — a re-run of an old run, or
-          # the registry lagging behind its own write. Publishing a version that
-          # already exists is the outcome we wanted, not a failure.
+          # Kept even though the caller already gates on a version bump: a
+          # manual dispatch, or a re-run of an old run, can still arrive at an
+          # already-published version. Publishing something that already exists
+          # is the outcome we wanted, not a failure.
           set +e
           OUTPUT="$(npm publish 2>&1)"
           STATUS=$?

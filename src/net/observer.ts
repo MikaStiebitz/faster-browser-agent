@@ -214,10 +214,41 @@ export interface NetworkObserverOptions {
   captureBodies?: boolean;
   /** Responses larger than this are never read. Default 256KB. */
   maxBodyBytes?: number;
+  /**
+   * Also record request headers and body, so an observed call can be promoted
+   * into a replayable request. Default false — see `FbaConfig.captureRequests`.
+   */
+  captureRequests?: boolean;
+  /** Request bodies longer than this are truncated. Default 32KB. */
+  maxRequestBodyBytes?: number;
 }
 
 const DEFAULT_MAX_ENDPOINTS = 60;
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
+const DEFAULT_MAX_REQUEST_BODY_BYTES = 32 * 1024;
+
+/**
+ * Header names never returned in full, even with capture enabled.
+ *
+ * Promoting an observed call into a saved request is worth a lot; handing a
+ * live bearer token to every caller of `endpoints()` is not the price. A host
+ * that genuinely needs the credential can read it from the page itself and
+ * decide, deliberately, what to do with it.
+ */
+const REDACTED_HEADERS = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'api-key',
+  'x-auth-token',
+  'x-access-token',
+  'x-csrf-token',
+  'x-xsrf-token',
+]);
+
+const REDACTED = '<redacted>';
 const MAX_PROBLEMS = 20;
 const MAX_PROBLEM_CHARS = 200;
 const MAX_BODY_ATTEMPTS = 2;
@@ -282,6 +313,8 @@ export class NetworkObserver {
   private readonly maxEndpoints: number;
   private readonly captureBodies: boolean;
   private readonly maxBodyBytes: number;
+  private readonly captureRequests: boolean;
+  private readonly maxRequestBodyBytes: number;
 
   /**
    * Keyed by `METHOD pattern`. Insertion order is maintained as least-recently
@@ -311,6 +344,8 @@ export class NetworkObserver {
     this.maxEndpoints = Math.max(1, options.maxEndpoints ?? DEFAULT_MAX_ENDPOINTS);
     this.captureBodies = options.captureBodies ?? true;
     this.maxBodyBytes = Math.max(0, options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES);
+    this.captureRequests = options.captureRequests ?? false;
+    this.maxRequestBodyBytes = Math.max(0, options.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES);
   }
 
   attach(): void {
@@ -420,6 +455,12 @@ export class NetworkObserver {
         if (shape) entry.requestBodyShape = shape;
       }
 
+      // Recorded once per endpoint, like the shapes above: a replay needs one
+      // representative request, not the newest of five hundred.
+      if (this.captureRequests && entry.requestHeaders === undefined) {
+        this.captureRequestDetail(entry, request);
+      }
+
       if (this.captureBodies && entry.responseShape === undefined) {
         this.readBodyLazily(entry, response);
       }
@@ -509,6 +550,38 @@ export class NetworkObserver {
     if (!raw || raw.length > this.maxBodyBytes) return undefined;
     const parsed = parseJsonish(raw);
     return parsed === undefined ? undefined : describeShape(parsed);
+  }
+
+  /**
+   * Record enough of a request to replay it.
+   *
+   * `headers()` and `postData()` are both already in memory on our side, so
+   * this costs no round trip. Sensitive header *names* are kept — knowing a
+   * call needs an `Authorization` header is the useful half — while their
+   * values are replaced.
+   */
+  private captureRequestDetail(entry: ObservedEndpoint, request: Request): void {
+    const headers: Array<[string, string]> = [];
+    for (const [name, value] of Object.entries(request.headers())) {
+      const lower = name.toLowerCase();
+      // Pseudo-headers are protocol noise, not part of a replayable request.
+      if (lower.startsWith(':')) continue;
+      headers.push([lower, REDACTED_HEADERS.has(lower) ? REDACTED : value]);
+    }
+    headers.sort(([a], [b]) => a.localeCompare(b));
+    entry.requestHeaders = headers;
+
+    const contentType = request.headers()['content-type'];
+    if (contentType) entry.requestContentType = contentType.split(';')[0]?.trim() ?? contentType;
+
+    const raw = request.postData();
+    if (raw) {
+      const truncated = raw.length > this.maxRequestBodyBytes;
+      entry.requestBody = {
+        text: truncated ? raw.slice(0, this.maxRequestBodyBytes) : raw,
+        truncated,
+      };
+    }
   }
 
   /**

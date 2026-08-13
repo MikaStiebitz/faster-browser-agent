@@ -1,37 +1,51 @@
-# Automatically tags and releases whenever package.json's version on main
-# changes — a push to main covers a PR merge too, since a merge produces a
-# push event. Triggered on every push to main (not just on package.json
-# changes) so it also catches version bumps folded into a larger commit or
-# merge; the version-vs-existing-tag check makes repeat pushes with no
-# version bump a safe no-op instead of a duplicate tag/release.
+# The single entry point for shipping a version.
 #
-# The release body is a changelog auto-generated from the non-merge commit
-# subjects since the previous vX.Y.Z tag (or the full history for the first
-# release).
+# One push to main with a changed package.json version produces, in order:
+#   1. a vX.Y.Z tag and a GitHub Release, with an auto-generated changelog
+#   2. a publish to npmjs.org
+#   3. a publish to GitHub Packages
 #
-# workflow_dispatch is a manual escape hatch: it goes through the Actions API
-# directly rather than the repo's push-trigger path, so it still works even
-# if that path is misbehaving.
+# Ordering is the point. Publishing first and tagging second can leave a
+# version on a registry that has no tag behind it — nobody can find the source
+# for it. Tag first, publish after, and a failed tag stops the whole thing.
+#
+# The publishes are reached with `workflow_call`, not by listening for the
+# release event. GitHub deliberately does not start workflow runs from events
+# raised by GITHUB_TOKEN, so a release created here could never trigger
+# anything; a `release:` trigger on the publish workflows was dead code. A PAT
+# would work around that, but calling directly needs no extra secret and keeps
+# the whole sequence visible in one run.
+#
+# Repeat pushes with no version bump are a safe no-op: the tag check short
+# circuits, and nothing downstream runs.
 name: Auto Tag Release
 
 on:
   push:
     branches: [main]
+    # A version bump always touches package.json, so this loses nothing —
+    # including bumps folded into a larger commit or a merge, since the filter
+    # matches if *any* changed file matches. It stops the workflow from waking
+    # on every docs commit only to no-op.
+    paths: ['package.json']
   workflow_dispatch: {}
 
-# Mirrors the serialisation used by the npm-publish workflows: two overlapping
-# runs would both see "tag not created yet" and race to create it, so only
-# one run for this ref should proceed at a time.
+# Constant, like the publish workflows: this is a release mutex, and the ref
+# that triggered it is irrelevant.
 concurrency:
-  group: auto-tag-release-${{ github.ref }}
+  group: auto-tag-release
   cancel-in-progress: false
-
-permissions:
-  contents: write
 
 jobs:
   tag-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      # Whether this run actually created a tag — the gate for everything below.
+      released: ${{ steps.check.outputs.exists == 'false' }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,9 +63,10 @@ jobs:
         run: |
           if git ls-remote --tags origin | grep -qE "refs/tags/${{ steps.version.outputs.tag }}$"; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.version.outputs.tag }} already exists, skipping"
+            echo "${{ steps.version.outputs.tag }} already exists — nothing to release"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.version.outputs.tag }} is new — will tag, release and publish"
           fi
 
       - name: Build changelog since previous tag
@@ -85,3 +100,22 @@ jobs:
             --title "${{ steps.version.outputs.tag }}" \
             --notes "${{ steps.changelog.outputs.changelog }}" \
             --target "${{ github.sha }}"
+
+  # Only after the tag exists. Both publishes still re-check the version
+  # themselves, so a manual dispatch of either one stays safe on its own.
+  publish-npm:
+    needs: tag-release
+    if: needs.tag-release.outputs.released == 'true'
+    uses: ./.github/workflows/npm-publish.yml
+    permissions:
+      contents: read
+    secrets: inherit
+
+  publish-github-packages:
+    needs: tag-release
+    if: needs.tag-release.outputs.released == 'true'
+    uses: ./.github/workflows/npm-publish-github-packages.yml
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit

@@ -1,31 +1,25 @@
 # Publishes a scoped mirror of this package to GitHub Packages
-# (@mikastiebitz/faster-browser-agent) whenever package.json's version on
-# main actually changes.
+# (@mikastiebitz/faster-browser-agent).
 #
 # GitHub Packages only resolves the npm registry override for SCOPED package
 # names (@owner/name); this package's public npmjs.org name is unscoped
 # (faster-browser-agent, see npm-publish.yml). Without a scope, npm silently
 # falls back to the default registry.npmjs.org and publish fails there
-# unauthenticated — that was the original bug here. The fix is to publish a
-# second, GitHub-Packages-only name under the owner's scope; the rename below
-# only touches the ephemeral checkout on the runner, never the committed
-# package.json.
-# workflow_dispatch is a manual escape hatch: it goes through the Actions API
-# directly rather than the repo's check-suite auto-trigger path, so it still
-# works even if that path is misbehaving for push events.
+# unauthenticated. The rename below only touches the ephemeral checkout on the
+# runner, never the committed package.json.
+#
+# Like npm-publish.yml, this no longer decides when to publish —
+# auto-tag-release.yml calls it after the tag exists. Reached via
+# workflow_call and workflow_dispatch only.
 name: Publish to GitHub Packages
 
 on:
-  push:
-    branches: [main]
-    paths: ['package.json']
+  workflow_call: {}
   workflow_dispatch: {}
 
-# See npm-publish.yml for the reasoning. This workflow only won the same race by
-# luck of timing once; it has the same check-then-act gate and needs the same
-# serialisation.
+# See npm-publish.yml: constant group, publishing is a global mutex.
 concurrency:
-  group: publish-gpr-${{ github.ref }}
+  group: publish-gpr
   cancel-in-progress: false
 
 jobs:
@@ -71,7 +65,7 @@ jobs:
             exit 0
           fi
 
-          # Backstop for what the concurrency group cannot cover — see the same
+          # Backstop for what the caller's gate cannot cover — see the same
           # step in npm-publish.yml.
           set +e
           OUTPUT="$(npm publish 2>&1)"

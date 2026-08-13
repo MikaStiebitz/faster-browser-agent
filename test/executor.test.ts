@@ -137,6 +137,7 @@ function makeSession(spec: FakeSessionSpec = {}): { session: Session; calls: Fak
       createdAt: 0,
       lastUsedAt: 0,
       version: 1,
+      busy: false,
     }),
     goto: async () => undefined,
     snapshot: async () => snapshotOf(spec.snapshotTree),

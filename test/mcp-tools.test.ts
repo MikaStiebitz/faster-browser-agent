@@ -88,6 +88,7 @@ function fakeSession(config: FbaConfig, id = 's1'): Session {
     createdAt: Date.now(),
     lastUsedAt: Date.now(),
     version: 1,
+    busy: false,
   };
   return {
     id,
