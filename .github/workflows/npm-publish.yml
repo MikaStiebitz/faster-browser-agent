@@ -23,10 +23,17 @@ on:
 # try, so the loser dies on E403. Serialising them means the second run sees the
 # first one's publish and skips cleanly.
 #
+# The group is deliberately constant, NOT keyed on github.ref. auto-tag-release
+# turns every version bump on main into a GitHub Release, which fires this
+# workflow a second time — and a release event carries refs/tags/vX.Y.Z while
+# the push carried refs/heads/main, so a ref-keyed group would put the two runs
+# in different groups and serialise nothing. Publishing a package is a global
+# mutex; the ref that triggered it is irrelevant.
+#
 # cancel-in-progress stays false deliberately — killing a run mid-publish is
 # worse than waiting for it.
 concurrency:
-  group: publish-npm-${{ github.ref }}
+  group: publish-npm
   cancel-in-progress: false
 
 jobs:

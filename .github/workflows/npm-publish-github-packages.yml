@@ -25,7 +25,7 @@ on:
 # luck of timing once; it has the same check-then-act gate and needs the same
 # serialisation.
 concurrency:
-  group: publish-gpr-${{ github.ref }}
+  group: publish-gpr
   cancel-in-progress: false
 
 jobs:
