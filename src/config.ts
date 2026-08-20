@@ -48,6 +48,7 @@ export function defaultConfig(): FbaConfig {
     skills: true,
     siteMemory: true,
     networkObserver: true,
+    network: {},
     captureRequests: false,
     logLevel: 'warn',
   };
@@ -195,13 +196,23 @@ export function loadConfig(options: LoadConfigOptions = {}): FbaConfig {
   const maxNodes = envInt('FBA_MAX_NODES');
   if (maxNodes) config.snapshot.maxNodes = maxNodes;
 
+  // Left unset when the env says nothing, so the observer's own defaults stay
+  // the single source of truth for what these numbers actually are.
+  assign(config.network, {
+    maxEndpoints: envInt('FBA_MAX_ENDPOINTS'),
+    captureBodies: envBool('FBA_CAPTURE_BODIES'),
+    maxBodyBytes: envInt('FBA_MAX_BODY_BYTES'),
+    maxRequestBodyBytes: envInt('FBA_MAX_REQUEST_BODY_BYTES'),
+  });
+
   // (1) explicit overrides
-  const { blocking: overrideBlocking, snapshot, settle, viewport, ...restOverrides } = options.overrides ?? {};
+  const { blocking: overrideBlocking, snapshot, settle, viewport, network, ...restOverrides } = options.overrides ?? {};
   assign(config, restOverrides);
   if (overrideBlocking) config.blocking = mergeBlocking(config.blocking, overrideBlocking);
   if (snapshot) assign(config.snapshot, snapshot);
   if (settle) assign(config.settle, settle);
   if (viewport) assign(config.viewport, viewport);
+  if (network) assign(config.network, network);
 
   return config;
 }

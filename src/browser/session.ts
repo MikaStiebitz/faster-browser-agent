@@ -139,8 +139,11 @@ export class PageSession implements Session {
     sessionCounter += 1;
     this.id = `s${sessionCounter}`;
 
+    // `captureRequests` stays the flat, top-level switch: it is the privacy
+    // decision, not a sizing knob, and it is spelled the same in the env and in
+    // every config file that already sets it.
     this.observer = deps.config.networkObserver
-      ? new NetworkObserver(page, { captureRequests: deps.config.captureRequests })
+      ? new NetworkObserver(page, { ...deps.config.network, captureRequests: deps.config.captureRequests })
       : undefined;
 
     page.on('request', this.onRequest);
@@ -280,6 +283,25 @@ export class PageSession implements Session {
     const timeout = options.timeoutMs ?? this.config.timeoutMs;
     const previousUrl = this.safeUrl();
 
+    // The endpoint table is only stale when the *application* changed. Within
+    // one origin it is the session's accumulated knowledge of the app's API and
+    // is far more useful kept than dropped.
+    //
+    // Decided and executed BEFORE the navigation, because `commit` returns as
+    // soon as the new document exists — the page is already firing its
+    // load-time XHRs while we do the two CDP round trips below. Resetting
+    // afterwards wiped whatever the NEW page had recorded in that window, and
+    // since about:blank -> app is always an origin change, it hit the first
+    // navigation of every session: three XHRs on load came back as any of
+    // 1, 2 or 3 endpoints depending on how the race landed.
+    //
+    // The cost of deciding early is that a cross-origin navigation which then
+    // *fails* has already dropped the table for the origin we are still on.
+    // That is a cache of observations the next action rebuilds, and it is the
+    // cheaper of the two mistakes: the other one silently under-reports the
+    // API of the page the agent is actually looking at.
+    if (this.observer && originOf(previousUrl) !== originOf(url, previousUrl)) this.observer.reset();
+
     try {
       await this.page.goto(url, { waitUntil: options.waitUntil ?? 'commit', timeout });
     } catch (e) {
@@ -304,11 +326,6 @@ export class PageSession implements Session {
     this.diffBaseline = undefined;
     this.forceFullNext = true;
     this.last = undefined;
-
-    // The endpoint table is only stale when the *application* changed. Within
-    // one origin it is the session's accumulated knowledge of the app's API and
-    // is far more useful kept than dropped.
-    if (this.observer && originOf(previousUrl) !== originOf(this.safeUrl())) this.observer.reset();
 
     // Sampled as a navigation: a page load is a different beast from a tab
     // click, and lumping the two into one distribution yields a budget that
@@ -917,9 +934,17 @@ function navigationHint(url: string, message: string): string {
   return 'check that the URL is reachable from this machine';
 }
 
-function originOf(url: string): string {
+/**
+ * The origin of a url, resolved against `base` when it is relative.
+ *
+ * `goto` compares the origin it is *heading to* against the one it is leaving,
+ * so a relative target ("/settings") has to be read as same-origin rather than
+ * as unparseable — otherwise every relative navigation would look like a
+ * different app and drop the endpoint table.
+ */
+function originOf(url: string, base?: string): string {
   try {
-    const parsed = new URL(url);
+    const parsed = base ? new URL(url, base) : new URL(url);
     return parsed.origin === 'null' ? '' : parsed.origin;
   } catch {
     return '';

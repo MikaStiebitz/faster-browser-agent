@@ -1057,6 +1057,25 @@ export interface SiteMatch {
 // Configuration
 // ---------------------------------------------------------------------------
 
+/**
+ * What the network observer is allowed to keep, as configuration.
+ *
+ * The observer has always taken these; only `captureRequests` was reachable
+ * from `FbaConfig`, so an embedder who wanted a bigger endpoint table or no
+ * response-body reads at all had to construct their own `NetworkObserver` and
+ * bypass the session that owns it.
+ */
+export interface NetworkObservationOptions {
+  /** Rows kept in the endpoint table. Observer default 60. */
+  maxEndpoints?: number;
+  /** Read response bodies to compute shapes. Observer default true. */
+  captureBodies?: boolean;
+  /** Responses larger than this are never read. Observer default 256KB. */
+  maxBodyBytes?: number;
+  /** Request bodies longer than this are truncated. Observer default 32KB. */
+  maxRequestBodyBytes?: number;
+}
+
 export interface FbaConfig {
   /** Root for all persistent state. Default `~/.faster-browser-agent`. */
   home: string;
@@ -1093,6 +1112,13 @@ export interface FbaConfig {
   siteMemory: boolean;
   /** Enable network endpoint observation. */
   networkObserver: boolean;
+  /**
+   * Sizing knobs for that observation.
+   *
+   * Every field is optional and unset means "the observer's own default", so
+   * this adds a seam without adding a second place where the defaults live.
+   */
+  network: NetworkObservationOptions;
   /**
    * Capture request headers and bodies onto `ObservedEndpoint`, so an observed
    * call can be promoted into a replayable request.

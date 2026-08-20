@@ -289,7 +289,7 @@ export class DefaultExecutor implements Executor {
           step: step.do,
           status: 'failed',
           ...(ctx.resolution ? { resolution: ctx.resolution } : {}),
-          detail: `${step.do} ${describeStep(step)} failed`,
+          detail: describeFailedStep(step),
           error: error.toLine(),
           ms,
         });
@@ -352,8 +352,8 @@ export class DefaultExecutor implements Executor {
     };
   }
 
-  fillForm(session: Session, request: FormFillRequest): Promise<FormFillResult> {
-    return fillForm(session, request, this.resolver, (s, steps, options) => this.run(s, steps, options));
+  fillForm(session: Session, request: FormFillRequest, options?: ActOptions): Promise<FormFillResult> {
+    return fillForm(session, request, this.resolver, (s, steps, inner) => this.run(s, steps, inner), options);
   }
 
   // -------------------------------------------------------------------------
@@ -1082,13 +1082,52 @@ async function readChecked(locator: Locator, timeout: number): Promise<boolean |
  * can be driven purely by `text` or `urlContains`, and describing only targets
  * produced `"waitFor  failed"` — two spaces and no information — for exactly
  * the steps whose failure is hardest to diagnose.
+ *
+ * The same reasoning finishes the job for the steps that carry no target at
+ * all: `goto` has a url or a route, `press` has keys, `dialog` has a verdict,
+ * `settle` has its windows. Each of those used to fall through to `''` and
+ * report "goto  failed" — the action named, the argument that would let an
+ * agent fix it hidden. Steps that genuinely have no argument (back, forward,
+ * reload, a conditionless waitFor) still return `''`, and `describeFailedStep`
+ * collapses the sentence rather than emitting the doubled space.
  */
 function describeStep(step: ActionStep): string {
   if ('target' in step && step.target) return describeTarget(step.target);
   if ('urlContains' in step && step.urlContains) return `url containing "${step.urlContains}"`;
   if ('text' in step && step.text) return `text "${truncate(normalizeText(step.text), 60)}"`;
   if (step.do === 'selectTab') return step.path.join(' > ');
+  if (step.do === 'goto') {
+    if (step.url) return step.url;
+    if (step.route) return `route "${step.route}"`;
+    return '';
+  }
+  if (step.do === 'press') return step.keys;
+  if (step.do === 'dialog') return step.accept ? 'accept' : 'dismiss';
+  if (step.do === 'settle') return step.options ? describeSettle(step.options) : '';
+  if (step.do === 'waitFor') return step.state ?? '';
+  if (step.do === 'scroll') return step.to ?? (step.by !== undefined ? `by ${step.by}` : '');
+  if (step.do === 'eval') return truncate(step.fn, 60);
+  if (step.do === 'clickAt') return `(${step.x}, ${step.y})`;
+  if (step.do === 'resize') return `${step.width}x${step.height}`;
   return '';
+}
+
+/** The settle windows that were actually asked for, in the order they read. */
+function describeSettle(options: SettleOptions): string {
+  const parts: string[] = [];
+  if (options.networkQuietMs !== undefined) parts.push(`network ${options.networkQuietMs}ms`);
+  if (options.domQuietMs !== undefined) parts.push(`dom ${options.domQuietMs}ms`);
+  if (options.timeoutMs !== undefined) parts.push(`timeout ${options.timeoutMs}ms`);
+  return parts.join(', ');
+}
+
+/**
+ * The `detail` on a failed step: never a doubled space, never a bare verb when
+ * the step carried an argument worth naming.
+ */
+function describeFailedStep(step: ActionStep): string {
+  const what = describeStep(step);
+  return what ? `${step.do} ${what} failed` : `${step.do} failed`;
 }
 
 function summarize(results: StepResult[]): string {

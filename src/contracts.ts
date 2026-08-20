@@ -273,7 +273,13 @@ export interface TargetResolver {
 
 export interface Executor {
   run(session: Session, steps: ActionStep[], options?: ActOptions): Promise<ActResult>;
-  fillForm(session: Session, request: FormFillRequest): Promise<FormFillResult>;
+  /**
+   * `options` is the same `ActOptions` `run` takes, and is threaded into the
+   * program the fill compiles — so a host watching `onStep` sees the per-field
+   * progress of a twelve-field form instead of one opaque call, exactly as it
+   * does for `act`.
+   */
+  fillForm(session: Session, request: FormFillRequest, options?: ActOptions): Promise<FormFillResult>;
 }
 
 // ---------------------------------------------------------------------------

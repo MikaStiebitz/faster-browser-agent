@@ -300,10 +300,17 @@ describe('schemas', () => {
     expect(result.text).toMatch(/^INVALID_ARGUMENT: bad arguments for browser_act/);
   });
 
+  // The check lives in the handler, not in the schema: a `.refine()` would make
+  // `openArgs` a ZodEffects, which the MCP SDK cannot convert — see the
+  // tools/list assertion in the createServer block below.
   it('browser_open requires exactly one of url/route', async () => {
     expect(tool('browser_open').schema.safeParse({ url: 'http://x/' }).success).toBe(true);
     expect(tool('browser_open').schema.safeParse({ route: '/settings' }).success).toBe(true);
-    expect(tool('browser_open').schema.safeParse({}).success).toBe(false);
+
+    const neither = await tool('browser_open').handler({});
+    expect(neither.isError).toBe(true);
+    expect(neither.text).toContain('exactly one of url or route');
+
     const both = await tool('browser_open').handler({ url: 'http://x/', route: '/settings' });
     expect(both.isError).toBe(true);
     expect(both.text).toContain('exactly one of url or route');
@@ -460,8 +467,11 @@ describe('createServer', () => {
       expect(listed.tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort());
 
       // The whole tool surface is resident context on every turn; keep an eye
-      // on its size the same way we keep an eye on snapshot size.
-      expect(JSON.stringify(listed.tools).length).toBeLessThan(24_000);
+      // on its size the same way we keep an eye on snapshot size. The budget
+      // went up by ~800 bytes in 0.5.0 because `browser_open` finally
+      // advertises its properties instead of an empty object — that is the
+      // schema arriving, not the surface bloating.
+      expect(JSON.stringify(listed.tools).length).toBeLessThan(26_000);
 
       const result = await client.callTool({ name: 'browser_map', arguments: {} });
       const content = result.content as Array<{ type: string; text: string }>;
