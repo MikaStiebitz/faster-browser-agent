@@ -274,20 +274,29 @@ const scopeSchema = z.enum(['viewport', 'page', 'region']).optional();
 // Argument schemas
 // ---------------------------------------------------------------------------
 
-const openArgs = z
-  .object({
-    url: z.string().optional().describe('absolute or app-relative url'),
-    route: z.string().optional().describe('route pattern, path or nav label resolved from the code index'),
-    params: z.record(z.string()).optional().describe('values for dynamic route segments'),
-    workspace: workspaceArg,
-    sessionId,
-    fresh: z.boolean().optional().describe('open a new tab instead of reusing one'),
-    scope: scopeSchema,
-    full: z.boolean().optional(),
-  })
-  .refine((a) => (a.url === undefined) !== (a.route === undefined), {
-    message: 'pass exactly one of url or route',
-  });
+/**
+ * Stays a plain `ZodObject` — deliberately, and this is load-bearing.
+ *
+ * A `.refine()` here would make it a `ZodEffects`, and the MCP SDK's
+ * `normalizeObjectSchema` only unwraps a `ZodObject`: anything else silently
+ * becomes `EMPTY_OBJECT_JSON_SCHEMA`, so `tools/list` advertised
+ * `{"type":"object","properties":{}}` for the one tool whose whole point is the
+ * deep link. Nothing threw — the handler still safe-parsed its own args — the
+ * model simply could not see that `url` or `route` existed. The exactly-one-of
+ * check therefore lives in the handler, where the other ten tools already put
+ * their cross-field validation.
+ */
+const openArgs = z.object({
+  url: z.string().optional().describe('absolute or app-relative url'),
+  route: z.string().optional().describe('route pattern, path or nav label resolved from the code index'),
+  params: z.record(z.string()).optional().describe('values for dynamic route segments'),
+  workspace: workspaceArg,
+  sessionId,
+  fresh: z.boolean().optional().describe('open a new tab instead of reusing one'),
+  label: z.string().optional().describe('name this session; browser_session list shows it'),
+  scope: scopeSchema,
+  full: z.boolean().optional(),
+});
 
 const snapshotArgs = z.object({
   sessionId,
@@ -409,12 +418,13 @@ async function workspaceFor(ctx: ToolContext, workspace?: string): Promise<Works
  */
 async function sessionFor(
   ctx: ToolContext,
-  args: { sessionId?: string; workspace?: string; fresh?: boolean },
+  args: { sessionId?: string; workspace?: string; fresh?: boolean; label?: string },
 ): Promise<Session> {
   return ctx.pool.acquire({
     ...(args.sessionId ? { sessionId: args.sessionId } : {}),
     ...(args.workspace ? { workspace: args.workspace } : {}),
     ...(args.fresh ? { fresh: true } : {}),
+    ...(args.label ? { label: args.label } : {}),
   });
 }
 
@@ -642,6 +652,13 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
       'Open a url, or deep-link to a route from the code index (skips clicking through menus). Returns a page observation.',
       openArgs,
       async (args) => {
+        // The cross-field rule the schema cannot carry without turning into a
+        // ZodEffects and erasing itself from `tools/list` — see `openArgs`.
+        if ((args.url === undefined) === (args.route === undefined)) {
+          throw new FbaError('INVALID_ARGUMENT', 'pass exactly one of url or route', {
+            hint: 'url:"http://localhost:3000/settings" for a literal address, route:"/settings" to deep-link via the code index',
+          });
+        }
         const root = (await workspaceFor(ctx, args.workspace)).root;
         const nav = await resolveNavigation(ctx, root, {
           ...(args.url !== undefined ? { url: args.url } : {}),
@@ -1604,7 +1621,7 @@ async function sessionText(
       const lines = [`sessions (${sessions.length}):`];
       for (const info of sessions) {
         lines.push(
-          `  ${info.id}  ws:${info.workspaceId}  v${info.version}  ${info.url}` +
+          `  ${info.id}${info.label ? ` "${info.label}"` : ''}  ws:${info.workspaceId}  v${info.version}  ${info.url}` +
             `  idle ${Math.round((Date.now() - info.lastUsedAt) / 1000)}s`,
         );
       }

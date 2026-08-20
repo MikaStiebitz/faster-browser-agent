@@ -256,6 +256,8 @@ fba profiles seed --from myapp-a1b2c3d4 --to myapp-e5f6g7h8
 
 Several workers **in one process** should each pass a `sessionKey` (or set
 `FBA_SESSION_KEY`) so they get their own tab instead of silently driving each other's.
+An agent can name the tab it opens — `browser_open {"url": "...", "label": "Checkout flow"}`
+— and `browser_session {"action": "list"}` shows the label next to the session id.
 
 And when a tool sits behind SSO or MFA that no agent can drive, inject the session an
 operator already holds rather than automating the login at all:
@@ -310,6 +312,9 @@ Precedence: explicit overrides → env → `.fbarc.json` (workspace) → `config
 | `FBA_BLOCKING` | `true` | Abort images/media/fonts/analytics |
 | `FBA_HEADLESS` | `true` | |
 | `FBA_MAX_NODES` / `FBA_TIMEOUT_MS` / `FBA_LOG_LEVEL` | `300` / `15000` / `warn` | |
+| `FBA_CAPTURE_REQUESTS` | `false` | Record request headers/body so an observed call can be replayed |
+| `FBA_MAX_ENDPOINTS` / `FBA_CAPTURE_BODIES` | `60` / `true` | Endpoint-table size, and whether response bodies are read for shapes |
+| `FBA_MAX_BODY_BYTES` / `FBA_MAX_REQUEST_BODY_BYTES` | `256KB` / `32KB` | Caps on what network observation reads and keeps |
 
 ## 📦 Library use
 

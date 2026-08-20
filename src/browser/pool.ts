@@ -105,8 +105,8 @@ export class DefaultBrowserPool implements BrowserPool {
     }
 
     if (options.sessionId) {
-      const existing = this.get(options.sessionId);
-      if (existing) return existing;
+      const existing = this.liveSession(options.sessionId);
+      if (existing) return label(existing, options);
       // Falling through rather than throwing: a stale session id after a reap
       // or a crash should transparently get the agent a working tab back.
       logger.debug(`session ${options.sessionId} is gone; opening a new one`);
@@ -121,15 +121,19 @@ export class DefaultBrowserPool implements BrowserPool {
     const key = options.sessionKey ?? process.env.FBA_SESSION_KEY ?? '';
     if (!options.fresh) {
       const reusable = mostRecentlyUsed(entry.sessions, (id) => (entry.sessionKeys.get(id) ?? '') === key);
-      if (reusable) return reusable;
+      if (reusable) return label(reusable, options);
     }
     const session = await this.openSession(entry, options.fresh === true);
     entry.sessionKeys.set(session.id, key);
-    if (options.label) session.label = options.label;
-    return session;
+    return label(session, options);
   }
 
   get(sessionId: string): Session | undefined {
+    return this.liveSession(sessionId);
+  }
+
+  /** `get`, keeping the concrete type the pool's own bookkeeping needs. */
+  private liveSession(sessionId: string): PageSession | undefined {
     const entry = this.sessionIndex.get(sessionId);
     const session = entry?.sessions.get(sessionId);
     if (!session) return undefined;
@@ -428,6 +432,19 @@ export class DefaultBrowserPool implements BrowserPool {
 // ---------------------------------------------------------------------------
 // Reuse helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Stamp the caller's name onto the session it just acquired.
+ *
+ * Applied on every path, not only on a freshly opened tab: `browser_open`
+ * usually *reuses* the workspace's current session, so labelling only new ones
+ * would make naming a session work exactly once per workspace and silently do
+ * nothing afterwards.
+ */
+function label(session: PageSession, options: AcquireOptions): PageSession {
+  if (options.label) session.label = options.label;
+  return session;
+}
 
 function mostRecentlyUsed(
   sessions: Map<string, PageSession>,

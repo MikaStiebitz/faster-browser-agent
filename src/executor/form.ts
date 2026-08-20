@@ -23,6 +23,7 @@
 import type { Executor, Session, TargetResolver } from '../contracts.js';
 import { CONTAINER_ROLES, INTERACTIVE_ROLES } from '../types.js';
 import type {
+  ActOptions,
   ActionStep,
   FieldFillResult,
   FormFillRequest,
@@ -267,11 +268,22 @@ interface PlannedField {
   step: ActionStep;
 }
 
+/**
+ * @param options Caller-supplied `ActOptions`, threaded into every inner
+ *   program the fill compiles. It exists so a host can watch `onStep` and see
+ *   field-by-field progress instead of one opaque call — a twelve-field form is
+ *   several seconds of work with no page-level trace between the fields. The
+ *   two policies the per-field report depends on are not the caller's to
+ *   override: the tab switch stays `stop` (there is nothing to fill if the
+ *   panel never mounted) and the field program stays `continue` (one bad field
+ *   must not swallow the other eleven).
+ */
 export async function fillForm(
   session: Session,
   request: FormFillRequest,
   resolver: TargetResolver,
   run: Executor['run'],
+  options: ActOptions = {},
 ): Promise<FormFillResult> {
   const keys = Object.keys(request.fields);
 
@@ -279,6 +291,7 @@ export async function fillForm(
   //    panel is mounted, so this has to happen before the snapshot.
   if (request.tabPath && request.tabPath.length > 0) {
     const tabResult = await run(session, [{ do: 'selectTab', path: request.tabPath }], {
+      ...options,
       onFailure: 'stop',
       settle: false,
     });
@@ -389,11 +402,13 @@ export async function fillForm(
   }
 
   const actResult = await run(session, steps, {
+    ...options,
     // One bad field must not silently swallow the remaining eleven; the caller
     // gets a per-field report and decides what to do.
     onFailure: 'continue',
-    // A wide form legitimately needs more than a single-action budget.
-    timeoutMs: Math.max(session.config.timeoutMs, steps.length * 2_000),
+    // A wide form legitimately needs more than a single-action budget — but an
+    // explicit budget from the caller is a deliberate ceiling, so it wins.
+    timeoutMs: options.timeoutMs ?? Math.max(session.config.timeoutMs, steps.length * 2_000),
   });
 
   for (let i = 0; i < planned.length; i++) {
